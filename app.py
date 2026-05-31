@@ -507,7 +507,7 @@ def get_ivr_label(ivr):
     else: return f"Mid IV (IVR {ivr:.0f}%) – Mixed, favour defined risk"
 
 # -----------------------------------------------------------------------------
-# UPDATED ANALYTICS PLOT FUNCTIONS (Expected Move & Hurst redesigned)
+# ANALYTICS PLOT FUNCTIONS (all unchanged)
 # -----------------------------------------------------------------------------
 def plot_correlation():
     if 'correlation_data' not in st.session_state: return None
@@ -536,7 +536,6 @@ def plot_correlation():
 
 def plot_expected_move():
     if selected_market == "Crypto":
-        # Fetch Deribit ATM IV or fallback to GARCH
         opt_df = fetch_deribit_option_chain("BTC" if 'BTC' in ticker else "ETH")
         if opt_df is not None and not opt_df.empty:
             atm_idx = (opt_df['strike'] - asset_spot).abs().argsort()[:1]
@@ -548,9 +547,8 @@ def plot_expected_move():
             iv = garch_vol_asset
         spot_label = f"Spot: {currency}{asset_spot:,.0f}"
         iv_label = f"ATM IV: {iv:.1f}%"
-        recent = get_recent_month(ticker)  # last 15 days
+        recent = get_recent_month(ticker)
     else:
-        # Indian market: use India VIX
         vix_data = get_india_vix("5d")
         if vix_data is None:
             st.error("Could not fetch India VIX")
@@ -558,7 +556,6 @@ def plot_expected_move():
         iv = float(vix_data.iloc[-1])
         spot_label = f"Nifty: {asset_spot:,.0f}"
         iv_label = f"India VIX: {iv:.2f}"
-        # Fetch last 1 month Nifty data for visual context
         nifty_data = yf_download_retry("^NSEI", period="1mo")
         if nifty_data.empty:
             return None
@@ -567,7 +564,7 @@ def plot_expected_move():
     if recent.empty:
         return None
 
-    daily_volatility = (iv / 100) * np.sqrt(1/365) if selected_market == "Crypto" else (iv / 100) * np.sqrt(1/365)
+    daily_volatility = (iv / 100) * np.sqrt(1/365)
     expected_move_points = asset_spot * daily_volatility
     upper_bound = asset_spot + expected_move_points
     lower_bound = asset_spot - expected_move_points
@@ -583,13 +580,11 @@ def plot_expected_move():
     ax.hlines(upper_bound, xmin=x_dates[-1], xmax=tomorrow_x, color='#00FF00', linestyle='--', linewidth=1.5, label='Upper Bound (+1 SD)')
     ax.hlines(lower_bound, xmin=x_dates[-1], xmax=tomorrow_x, color='#FF3333', linestyle='--', linewidth=1.5, label='Lower Bound (-1 SD)')
     ax.fill_between([x_dates[-1], tomorrow_x], [asset_spot, lower_bound], [asset_spot, upper_bound], color='gray', alpha=0.2)
-
     ax.set_title('Implied Daily Expected Move', fontsize=18, color='white', pad=20, fontweight='bold')
     ax.set_ylabel('Price', color='gray', fontsize=12)
     ax.grid(True, color='#2A2A2A', linestyle=':')
     ax.set_xticks([])
     ax.legend(loc='upper left', facecolor='black', edgecolor='gray', fontsize=10)
-
     props = dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.8, edgecolor='white', linewidth=1.5)
     text_str = (
         f"⚡ {iv_label}\n"
@@ -613,7 +608,6 @@ def plot_hurst():
         return None
     current_price = float(df['Close'].iloc[-1])
     current_hurst = float(df['Hurst'].iloc[-1])
-
     if current_hurst < 0.45:
         regime = "MEAN REVERTING"
         stat_property = "Range-Bound Action / Volatility Compression"
@@ -854,7 +848,7 @@ def fetch_nse_options(index="^NSEI"):
     except: return None, None
 
 # -----------------------------------------------------------------------------
-# CACHED QUICK STATS
+# CACHED QUICK STATS (unchanged)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=120)
 def compute_quick_stats(ticker, asset_choice, asset_spot, garch_vol_asset, park_vol, ivr_val, ivp_val, trading_days, currency, selected_market, corr_val, corr_status):
@@ -974,7 +968,7 @@ with toolbar_col5:
     ticker = TICKER_DICT[asset_choice]
 
 # -----------------------------------------------------------------------------
-# SIDEBAR (no Telegram)
+# SIDEBAR
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("## 🧬 AlphaQuant Terminal")
@@ -1059,6 +1053,7 @@ active_tab = st.session_state.get('active_tab', '📊 Dashboard & Analytics')
 if active_tab == "📊 Dashboard & Analytics":
     st.title("📊 Market Intelligence Dashboard")
 
+    # Market Overview card
     with st.container(border=True):
         st.markdown('<p class="section-header">🌍 Market Overview</p>', unsafe_allow_html=True)
         if selected_market == "Crypto":
@@ -1081,6 +1076,7 @@ if active_tab == "📊 Dashboard & Analytics":
                     st.markdown(f"""<div class="metric-card"><h3>📈 Sensex</h3><div class="value">{indian_data['sensex']:,.0f}</div><div class="delta">{indian_data['sensex_change']:+.2f}%</div></div>""", unsafe_allow_html=True)
             else: st.warning("Indian market summary not available.")
 
+    # Active Asset Detail card
     with st.container(border=True):
         st.markdown('<p class="section-header">🎯 Active Asset Details</p>', unsafe_allow_html=True)
         if asset_spot == 0:
@@ -1199,7 +1195,7 @@ if active_tab == "📊 Dashboard & Analytics":
             else:
                 st.warning("Could not fetch live options chain.")
 
-    # Quick Analytics Overview
+    # Quick Analytics Overview (with explanations)
     with st.container(border=True):
         st.markdown('<p class="section-header">⚡ Quick Analytics Overview</p>', unsafe_allow_html=True)
         n_cols = 4
@@ -1214,6 +1210,19 @@ if active_tab == "📊 Dashboard & Analytics":
                         st.markdown(f"""<div class="quick-stat"><strong>{key}</strong><br><span style="font-size:1.2rem;">{stat['value']}</span><br><small>{stat['status']}</small></div>""", unsafe_allow_html=True)
                         if st.button("🔍", key=f"btn_{key}", help="View detailed chart"):
                             st.session_state['selected_analysis'] = stat['module']; st.rerun()
+        # Simple plain‑English table
+        with st.expander("📖 What each metric means"):
+            st.markdown("""
+| Metric | What it tells you |
+|--------|-------------------|
+| **Correlation** | How closely two indices move together. High = lockstep, Low = decoupling. |
+| **Expected Move (D)** | The +/-1σ range for tomorrow. Use it to set strike distances. |
+| **Hurst** | Market regime: Trending (>0.55), Mean‑reverting (<0.45), or Random. |
+| **IVR/IVP** | IV Rank shows if options are cheap or expensive. High IV = sell premium, Low IV = buy premium. |
+| **Parkinson** | Volatility calculated from intraday high‑low range. High values = large intraday swings. |
+| **Liq. Sweep** | Detects institutional absorption. Supply sweep = bearish, Demand sweep = bullish. |
+| **Max Pain** | The strike where option sellers profit most. Price often gravitates toward it. |
+            """)
 
     # Market Status – Plain English
     with st.container(border=True):
