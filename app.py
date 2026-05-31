@@ -487,7 +487,7 @@ def get_ivr_label(ivr):
     else: return f"Mid IV (IVR {ivr:.0f}%) – Mixed"
 
 # -----------------------------------------------------------------------------
-# ANALYTICS PLOT FUNCTIONS (all unchanged, fully included)
+# ANALYTICS PLOT FUNCTIONS (all unchanged)
 # -----------------------------------------------------------------------------
 def plot_correlation():
     if 'correlation_data' not in st.session_state: return None
@@ -881,7 +881,7 @@ with toolbar_col5:
     ticker = TICKER_DICT[asset_choice]
 
 # -----------------------------------------------------------------------------
-# SIDEBAR (new tabs)
+# SIDEBAR (simpler, only Dashboard + tools)
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("## 🧬 AlphaQuant Terminal")
@@ -896,8 +896,6 @@ with st.sidebar:
     st.markdown("---")
     tab = st.radio("📑 Navigate", [
         "📊 Dashboard & Analytics",
-        "💹 Live Terminal",
-        "📈 Advanced Strategies",
         "📄 Paper Trading",
         "🧙 Strategy Wizard",
         "📓 Journal"
@@ -961,14 +959,13 @@ trade_bias_label = get_trade_bias(garch_vol_asset, ivr_val, corr_val)
 playbook_strategies = get_playbook(garch_vol_asset, ivr_val, corr_val)
 
 # -----------------------------------------------------------------------------
-# RENDER TABS – FULL DASHBOARD RESTORED
+# RENDER TABS – DASHBOARD COMBINED WITH LIVE & ADVANCED
 # -----------------------------------------------------------------------------
 active_tab = st.session_state.get('active_tab', '📊 Dashboard & Analytics')
 
 if active_tab == "📊 Dashboard & Analytics":
     st.title("📊 Market Intelligence Dashboard")
-
-    # Market Overview card
+    # Market Overview
     with st.container(border=True):
         st.markdown('<p class="section-header">🌍 Market Overview</p>', unsafe_allow_html=True)
         if selected_market == "Crypto":
@@ -991,7 +988,7 @@ if active_tab == "📊 Dashboard & Analytics":
                     st.markdown(f"""<div class="metric-card"><h3>📈 Sensex</h3><div class="value">{indian_data['sensex']:,.0f}</div><div class="delta">{indian_data['sensex_change']:+.2f}%</div></div>""", unsafe_allow_html=True)
             else: st.warning("Indian market summary not available.")
 
-    # Active Asset Detail card
+    # Active Asset Detail
     with st.container(border=True):
         st.markdown('<p class="section-header">🎯 Active Asset Details</p>', unsafe_allow_html=True)
         if asset_spot == 0:
@@ -1017,6 +1014,7 @@ if active_tab == "📊 Dashboard & Analytics":
             with st.expander("🎯 Allowed Strategies (Playbook)"):
                 for s in playbook_strategies:
                     st.write(f"- {s}")
+            # Strike zones
             if 'Exp. Move (D)' in quick_stats:
                 val = quick_stats['Exp. Move (D)']['value']
                 numeric_part = re.sub(r'[^\d\.\-]', '', val)
@@ -1056,7 +1054,7 @@ if active_tab == "📊 Dashboard & Analytics":
             vix_data = get_india_vix("5d")
             if vix_data is not None:
                 iv = float(vix_data.iloc[-1])/100
-                T = 1/252  # approximate 1-day
+                T = 1/252
                 r = 0.065
                 sigma = iv
                 atm_strike = round(asset_spot, -2) if 'Nifty' in asset_choice else round(asset_spot, -2)
@@ -1079,16 +1077,32 @@ if active_tab == "📊 Dashboard & Analytics":
                     st.write(f"Theta: {put['theta']:.3f}")
                     st.write(f"Vega: {put['vega']:.3f}")
                     st.write(f"Price: {put['price']:.2f}")
-                st.caption("**Greeks Impact:** High IV → options are expensive, favour selling. Low IV → buy options. Delta near 0.5 for ATM calls, -0.5 for puts. Theta accelerates near expiry.")
+                st.caption("**Greeks Impact:** High IV → options expensive, favour selling. Low IV → buy options. Delta near 0.5 for ATM calls, -0.5 for puts. Theta accelerates near expiry.")
             else:
                 st.warning("VIX data not available for Greeks.")
 
-    # Order Flow (Crypto only)
-    if selected_market == "Crypto":
-        with st.expander("📈 Live Binance Order Flow (on‑demand)"):
-            show_of = st.checkbox("Show Order Book", value=st.session_state['show_order_flow'])
-            if show_of:
-                st.session_state['show_order_flow'] = True
+    # Live Terminal Section (integrated)
+    with st.expander("💹 Live Terminal (Chart, Order Book, Quick Trade)", expanded=False):
+        st.caption("Real‑time price chart, order book, and quick paper trade panel.")
+        if st.button("🔄 Refresh Live Data"):
+            st.rerun()
+        live_data = yf_download_retry(ticker, period="1d", interval="5m")
+        if not live_data.empty:
+            live_df = flatten_df(live_data).tail(50)
+            fig = go.Figure(data=[go.Candlestick(
+                x=live_df.index,
+                open=live_df['Open'], high=live_df['High'],
+                low=live_df['Low'], close=live_df['Close']
+            )])
+            fig.update_layout(title=f"{asset_choice} Live Chart (5m)", xaxis_rangeslider_visible=False,
+                              template="plotly_dark", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Intraday data not available.")
+        if selected_market == "Crypto":
+            col_ob1, col_ob2 = st.columns(2)
+            with col_ob1:
+                st.markdown("### 📈 Order Book Depth")
                 bin_symbol = get_binance_symbol(ticker)
                 bids, asks = fetch_binance_orderbook(bin_symbol)
                 if bids is not None and asks is not None:
@@ -1096,12 +1110,11 @@ if active_tab == "📊 Dashboard & Analytics":
                     mid = (best_bid+best_ask)/2
                     spread = best_ask-best_bid; spread_pct = (spread/mid)*100
                     imbalance = (bids['Size'].sum()-asks['Size'].sum())/(bids['Size'].sum()+asks['Size'].sum())
-                    col_of1, col_of2, col_of3, col_of4 = st.columns(4)
-                    col_of1.metric("Best Bid", f"{currency}{best_bid:,.2f}")
-                    col_of2.metric("Best Ask", f"{currency}{best_ask:,.2f}")
-                    col_of3.metric("Spread", f"{currency}{spread:,.2f}", f"{spread_pct:.4f}%")
-                    col_of4.metric("Imbalance", f"{imbalance:+.3f}",
-                                   "Bids heavy" if imbalance>0.1 else ("Asks heavy" if imbalance<-0.1 else "Neutral"))
+                    st.metric("Best Bid", f"{currency}{best_bid:,.2f}")
+                    st.metric("Best Ask", f"{currency}{best_ask:,.2f}")
+                    st.metric("Spread", f"{currency}{spread:,.2f} ({spread_pct:.4f}%)")
+                    st.metric("Imbalance", f"{imbalance:+.3f}",
+                              "Bids heavy" if imbalance>0.1 else ("Asks heavy" if imbalance<-0.1 else "Neutral"))
                     fig_depth = go.Figure()
                     fig_depth.add_trace(go.Scatter(x=bids['Price'], y=bids['Size'].cumsum(),
                                                    mode='lines', name='Bids', line=dict(color='green', width=2),
@@ -1110,33 +1123,130 @@ if active_tab == "📊 Dashboard & Analytics":
                                                    mode='lines', name='Asks', line=dict(color='red', width=2),
                                                    fill='tozeroy', fillcolor='rgba(255,0,0,0.1)'))
                     fig_depth.add_vline(x=mid, line_dash="dot", annotation_text="Mid")
-                    fig_depth.update_layout(title="Order Book Depth", xaxis_title="Price", yaxis_title="Cumulative Size")
+                    fig_depth.update_layout(title="Order Book Depth", xaxis_title="Price", yaxis_title="Cumulative Size",
+                                            template="plotly_dark", height=300)
                     st.plotly_chart(fig_depth, use_container_width=True)
                 else:
-                    st.warning("Could not fetch Binance order book.")
+                    st.warning("Binance order book unavailable.")
+            with col_ob2:
+                st.markdown("### ⚡ Quick Trade (Paper)")
+                with st.form("live_trade_form", clear_on_submit=True):
+                    direction = st.selectbox("Direction", ["Long", "Short"])
+                    qty = st.number_input("Quantity", min_value=0.01, value=0.01, step=0.01)
+                    price = st.number_input("Price (Market)", value=asset_spot)
+                    if st.form_submit_button("Execute"):
+                        cost = qty * price
+                        if cost > st.session_state['paper_balance']:
+                            st.error("Insufficient balance!")
+                        else:
+                            st.session_state['paper_balance'] -= cost
+                            st.session_state['paper_positions'].append({
+                                'Asset': asset_choice, 'Direction': direction, 'Qty': qty,
+                                'Entry': price, 'Type': 'Spot',
+                                'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            })
+                            st.session_state['paper_trade_history'].append({
+                                'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                'Asset': asset_choice, 'Direction': direction, 'Qty': qty,
+                                'Price': price, 'Cost': cost, 'Action': 'Open'
+                            })
+                            st.success(f"{direction} {qty} {asset_choice} @ {currency}{price:,.2f}")
+                            st.rerun()
+        else:
+            st.info("Live order book is only available for Crypto.")
+        if st.session_state['paper_positions']:
+            st.markdown("### 📋 Open Positions (Live P&L)")
+            pos_df = pd.DataFrame(st.session_state['paper_positions'])
+            pos_df['Current Price'] = asset_spot
+            pos_df['P&L'] = pos_df.apply(
+                lambda row: (asset_spot - row['Entry']) * row['Qty'] if row['Direction']=='Long'
+                else (row['Entry'] - asset_spot) * row['Qty'], axis=1)
+            st.dataframe(pos_df[['Asset','Direction','Qty','Entry','Current Price','P&L']].style.format({
+                'Entry': f'{currency}{{:,.2f}}', 'Current Price': f'{currency}{{:,.2f}}', 'P&L': f'{currency}{{:,.2f}}'
+            }))
+            total_unrealized = pos_df['P&L'].sum()
+            st.metric("Unrealized P&L", f"{currency}{total_unrealized:,.2f}")
 
-    # Live Options Chain (India only)
-    if selected_market == "Indian Market" and ('Nifty' in asset_choice or 'Bank Nifty' in asset_choice):
-        with st.expander("📋 Live Options Chain (NSE)"):
-            spot_nse, opt_chain = fetch_nse_options(ticker)
-            if opt_chain is not None and not opt_chain.empty:
-                strikes = opt_chain['Strike'].unique()
-                calls = opt_chain[opt_chain['Type']=='CE'].set_index('Strike')['OI'].reindex(strikes, fill_value=0)
-                puts = opt_chain[opt_chain['Type']=='PE'].set_index('Strike')['OI'].reindex(strikes, fill_value=0)
-                pain = {k: np.sum(np.maximum(0, k-strikes)*calls + np.maximum(0, strikes-k)*puts) for k in strikes}
-                max_pain_live = min(pain, key=pain.get)
-                st.metric("Spot", f"{currency}{spot_nse:,.0f}")
-                st.metric("Max Pain", f"{currency}{max_pain_live:,.0f}")
-                fig_oi, ax_oi = plt.subplots(figsize=(14,8))
-                ax_oi.barh(strikes, calls/1e5, color='red', alpha=0.8, label='Call OI')
-                ax_oi.barh(strikes, -puts/1e5, color='green', alpha=0.8, label='Put OI')
-                ax_oi.axhline(spot_nse, color='cyan', linewidth=2, label=f'Spot: {spot_nse:,.0f}')
-                ax_oi.axhline(max_pain_live, color='white', linestyle='--', label=f'Max Pain: {max_pain_live}')
-                ax_oi.set_title("Live NSE Options OI Profile", fontweight='bold')
-                ax_oi.legend(); ax_oi.invert_yaxis()
-                st.pyplot(fig_oi)
-            else:
-                st.warning("Could not fetch live options chain.")
+    # Advanced Strategies Section (integrated)
+    with st.expander("📈 Advanced Options Strategies", expanded=False):
+        st.markdown("Build and analyze complex option positions with adjustments based on current market regime.")
+        col1, col2 = st.columns(2)
+        with col1:
+            strategy = st.selectbox("Select Strategy", [
+                "Iron Condor", "Bull Call Spread", "Bear Put Spread",
+                "Long Straddle", "Short Strangle", "Calendar Spread",
+                "Butterfly Spread"
+            ], key="adv_strat")
+        with col2:
+            dte = st.slider("Days to Expiry", 0, 30, 4, key="dte_adv")
+            T = max(0.5, dte)/252
+        sigma = garch_vol_asset/100
+        r = 0.05
+        legs = []
+        if strategy == "Iron Condor":
+            move = asset_spot * sigma * np.sqrt(T)
+            short_call = round(asset_spot + move, -1)
+            short_put = round(asset_spot - move, -1)
+            long_call = round(asset_spot + move*1.5, -1)
+            long_put = round(asset_spot - move*1.5, -1)
+            legs = [("Short Call", short_call, "call"), ("Short Put", short_put, "put"),
+                    ("Long Call", long_call, "call"), ("Long Put", long_put, "put")]
+        elif strategy == "Bull Call Spread":
+            move = asset_spot * sigma * np.sqrt(T) * 0.8
+            long_call = round(asset_spot, -1)
+            short_call = round(asset_spot + move, -1)
+            legs = [("Long Call", long_call, "call"), ("Short Call", short_call, "call")]
+        elif strategy == "Bear Put Spread":
+            move = asset_spot * sigma * np.sqrt(T) * 0.8
+            long_put = round(asset_spot, -1)
+            short_put = round(asset_spot - move, -1)
+            legs = [("Long Put", long_put, "put"), ("Short Put", short_put, "put")]
+        elif strategy == "Long Straddle":
+            atm = round(asset_spot, -1)
+            legs = [("Long Call", atm, "call"), ("Long Put", atm, "put")]
+        elif strategy == "Short Strangle":
+            move = asset_spot * sigma * np.sqrt(T)
+            short_call = round(asset_spot + move, -1)
+            short_put = round(asset_spot - move, -1)
+            legs = [("Short Call", short_call, "call"), ("Short Put", short_put, "put")]
+        elif strategy == "Calendar Spread":
+            st.warning("Calendar spreads require two expirations. This is a placeholder.")
+        elif strategy == "Butterfly Spread":
+            atm = round(asset_spot, -1)
+            move = asset_spot * sigma * np.sqrt(T) * 1.2
+            low = round(asset_spot - move, -1)
+            high = round(asset_spot + move, -1)
+            legs = [("Long Call", low, "call"), ("Short Call", atm, "call"),
+                    ("Short Call", atm, "call"), ("Long Call", high, "call")]
+
+        if legs:
+            st.subheader("Position Greeks")
+            greeks_list = []
+            for leg_name, strike, opt_type in legs:
+                g = calc_greeks(asset_spot, strike, T, r, sigma, opt_type)
+                greeks_list.append({'Type': leg_name, 'Strike': strike, 'Price': g['price'],
+                                    'Delta': g['delta'], 'Gamma': g['gamma'], 'Theta': g['theta'], 'Vega': g['vega']})
+            greek_df = pd.DataFrame(greeks_list)
+            st.dataframe(greek_df.style.format({"Price": "{:.2f}", "Delta": "{:.3f}", "Gamma": "{:.4f}", "Theta": "{:.3f}", "Vega": "{:.3f}"}))
+            net_numeric = greek_df[['Price','Delta','Gamma','Theta','Vega']].sum().to_frame().T
+            net_numeric.insert(0, 'Type', 'Net')
+            net_numeric.insert(1, 'Strike', '-')
+            st.markdown("**Net Position**")
+            st.dataframe(net_numeric.style.format({"Price": "{:.2f}", "Delta": "{:.3f}", "Gamma": "{:.4f}", "Theta": "{:.3f}", "Vega": "{:.3f}"}))
+            st.subheader("🛠️ Adjustment Suggestions")
+            adjustments = []
+            if ivr_val and ivr_val > 50:
+                adjustments.append("High IV regime – consider rolling short strikes further OTM or converting to iron condor.")
+            if park_vol and park_vol > garch_vol_asset:
+                adjustments.append("Parkinson vol > GARCH – large intraday swings; adjust stops or add a hedge.")
+            if corr_val and corr_val > 0.8:
+                adjustments.append("High correlation – systematic risk elevated; avoid concentrated positions.")
+            if trade_bias_label:
+                adjustments.append(f"Trade bias: {trade_bias_label}")
+            if not adjustments:
+                adjustments.append("Current analytics do not trigger specific adjustments.")
+            for adj in adjustments:
+                st.markdown(f"- {adj}")
 
     # Quick Analytics Overview
     with st.container(border=True):
@@ -1263,112 +1373,177 @@ if active_tab == "📊 Dashboard & Analytics":
                 if fig: st.pyplot(fig)
                 st.markdown("**What it indicates:** Positive VRP = implied > actual (sell premium). Negative VRP = actual > implied (buy premium).")
 
-elif active_tab == "💹 Live Terminal":
-    st.title("💹 Live Trading Terminal")
-    st.caption("Real‑time price chart, order book, and quick paper trade panel. Click Refresh to update.")
-
-    if st.button("🔄 Refresh Live Data"):
-        st.rerun()
-
-    live_data = yf_download_retry(ticker, period="1d", interval="5m")
-    if not live_data.empty:
-        live_df = flatten_df(live_data).tail(50)
-        fig = go.Figure(data=[go.Candlestick(
-            x=live_df.index,
-            open=live_df['Open'], high=live_df['High'],
-            low=live_df['Low'], close=live_df['Close']
-        )])
-        fig.update_layout(title=f"{asset_choice} Live Chart (5m)", xaxis_rangeslider_visible=False,
-                          template="plotly_dark", height=400)
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("Intraday data not available for live chart.")
-
-    if selected_market == "Crypto":
-        col_ob1, col_ob2 = st.columns(2)
-        with col_ob1:
-            st.markdown("### 📈 Order Book Depth")
-            bin_symbol = get_binance_symbol(ticker)
-            bids, asks = fetch_binance_orderbook(bin_symbol)
-            if bids is not None and asks is not None:
-                best_bid = bids['Price'].iloc[0]; best_ask = asks['Price'].iloc[0]
-                mid = (best_bid+best_ask)/2
-                spread = best_ask-best_bid; spread_pct = (spread/mid)*100
-                imbalance = (bids['Size'].sum()-asks['Size'].sum())/(bids['Size'].sum()+asks['Size'].sum())
-                st.metric("Best Bid", f"{currency}{best_bid:,.2f}")
-                st.metric("Best Ask", f"{currency}{best_ask:,.2f}")
-                st.metric("Spread", f"{currency}{spread:,.2f} ({spread_pct:.4f}%)")
-                st.metric("Imbalance", f"{imbalance:+.3f}",
-                          "Bids heavy" if imbalance>0.1 else ("Asks heavy" if imbalance<-0.1 else "Neutral"))
-                fig_depth = go.Figure()
-                fig_depth.add_trace(go.Scatter(x=bids['Price'], y=bids['Size'].cumsum(),
-                                               mode='lines', name='Bids', line=dict(color='green', width=2),
-                                               fill='tozeroy', fillcolor='rgba(0,255,0,0.1)'))
-                fig_depth.add_trace(go.Scatter(x=asks['Price'], y=asks['Size'].cumsum(),
-                                               mode='lines', name='Asks', line=dict(color='red', width=2),
-                                               fill='tozeroy', fillcolor='rgba(255,0,0,0.1)'))
-                fig_depth.add_vline(x=mid, line_dash="dot", annotation_text="Mid")
-                fig_depth.update_layout(title="Order Book Depth", xaxis_title="Price", yaxis_title="Cumulative Size",
-                                        template="plotly_dark", height=300)
-                st.plotly_chart(fig_depth, use_container_width=True)
-            else:
-                st.warning("Binance order book unavailable.")
-        with col_ob2:
-            st.markdown("### ⚡ Quick Trade (Paper)")
-            with st.form("live_trade_form", clear_on_submit=True):
-                direction = st.selectbox("Direction", ["Long", "Short"])
-                qty = st.number_input("Quantity", min_value=0.01, value=0.01, step=0.01)
-                price = st.number_input("Price (Market)", value=asset_spot)
-                if st.form_submit_button("Execute"):
-                    cost = qty * price
-                    if cost > st.session_state['paper_balance']:
-                        st.error("Insufficient balance!")
-                    else:
-                        st.session_state['paper_balance'] -= cost
-                        st.session_state['paper_positions'].append({
-                            'Asset': asset_choice, 'Direction': direction, 'Qty': qty,
-                            'Entry': price, 'Type': 'Spot',
-                            'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                        })
-                        st.session_state['paper_trade_history'].append({
-                            'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            'Asset': asset_choice, 'Direction': direction, 'Qty': qty,
-                            'Price': price, 'Cost': cost, 'Action': 'Open'
-                        })
-                        st.success(f"{direction} {qty} {asset_choice} @ {currency}{price:,.2f}")
-                        st.rerun()
-    else:
-        st.info("Live order book is only available for Crypto. Indian market shows chart only.")
-
-    if st.session_state['paper_positions']:
-        st.markdown("### 📋 Open Positions (Live P&L)")
-        pos_df = pd.DataFrame(st.session_state['paper_positions'])
-        pos_df['Current Price'] = asset_spot
-        pos_df['P&L'] = pos_df.apply(
-            lambda row: (asset_spot - row['Entry']) * row['Qty'] if row['Direction']=='Long'
-            else (row['Entry'] - asset_spot) * row['Qty'], axis=1)
-        st.dataframe(pos_df[['Asset','Direction','Qty','Entry','Current Price','P&L']].style.format({
-            'Entry': f'{currency}{{:,.2f}}', 'Current Price': f'{currency}{{:,.2f}}', 'P&L': f'{currency}{{:,.2f}}'
-        }))
-        total_unrealized = pos_df['P&L'].sum()
-        st.metric("Unrealized P&L", f"{currency}{total_unrealized:,.2f}")
-
-elif active_tab == "📈 Advanced Strategies":
-    st.title("📈 Advanced Options Strategies")
-    st.markdown("Build and analyze complex option positions with adjustments based on current market regime.")
-    # ... (same as before, unchanged)
-
 elif active_tab == "📄 Paper Trading":
-    # ... (unchanged)
-    pass
+    st.title("📄 Paper Trading")
+    st.markdown(f"Simulate trades with a **{currency}100,000** virtual account.")
+    col_bal, col_pnl = st.columns(2)
+    with col_bal: st.metric("Cash Balance", f"{currency}{st.session_state['paper_balance']:,.2f}")
+    unrealized_pnl = 0
+    for pos in st.session_state['paper_positions']:
+        if pos['Type'] == 'Spot':
+            unrealized_pnl += (asset_spot - pos['Entry']) * pos['Qty'] if pos['Direction'] == 'Long' else (pos['Entry'] - asset_spot) * pos['Qty']
+    total_equity = st.session_state['paper_balance'] + unrealized_pnl
+    col_pnl.metric("Total Equity", f"{currency}{total_equity:,.2f}", delta=f"Unrealized: {currency}{unrealized_pnl:,.2f}")
+    with st.expander("⚡ Quick Trade (Manual)"):
+        with st.form("paper_trade_form"):
+            c1, c2 = st.columns(2)
+            asset = c1.selectbox("Asset", list(TICKER_DICT.keys()), key="paper_asset")
+            direction = c2.selectbox("Direction", ["Long", "Short"])
+            qty = st.number_input("Quantity", min_value=0.01, value=0.01, step=0.01)
+            price = st.number_input("Price", value=asset_spot)
+            if st.form_submit_button("Execute Trade"):
+                cost = qty * price
+                if cost > st.session_state['paper_balance']:
+                    st.error("Insufficient balance!")
+                else:
+                    st.session_state['paper_balance'] -= cost
+                    st.session_state['paper_positions'].append({
+                        'Asset': asset, 'Direction': direction, 'Qty': qty,
+                        'Entry': price, 'Type': 'Spot',
+                        'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    })
+                    st.session_state['paper_trade_history'].append({
+                        'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'Asset': asset, 'Direction': direction, 'Qty': qty,
+                        'Price': price, 'Cost': cost, 'Action': 'Open'
+                    })
+                    st.success(f"Bought {qty} {asset} @ {currency}{price:,.2f}")
+    if st.session_state['paper_positions']:
+        st.subheader("📋 Open Positions")
+        pos_df = pd.DataFrame(st.session_state['paper_positions']); pos_df.index = range(1, len(pos_df)+1)
+        st.dataframe(pos_df)
+        close_idx = st.selectbox("Select position to close", pos_df.index)
+        close_price = st.number_input("Close Price", value=asset_spot)
+        if st.button("Close Position"):
+            pos = pos_df.loc[close_idx]
+            pnl = (close_price - pos['Entry']) * pos['Qty'] if pos['Direction']=='Long' else (pos['Entry'] - close_price) * pos['Qty']
+            st.session_state['paper_balance'] += (pos['Entry'] * pos['Qty'] + pnl)
+            st.session_state['paper_trade_history'].append({
+                'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'Asset': pos['Asset'], 'Direction': pos['Direction'], 'Qty': pos['Qty'],
+                'Price': close_price, 'PnL': pnl, 'Action': 'Close'
+            })
+            st.session_state['paper_positions'].pop(close_idx-1)
+            st.success(f"Closed position with P&L: {currency}{pnl:,.2f}"); st.rerun()
+    if st.session_state['paper_trade_history']:
+        st.subheader("📜 Trade History")
+        hist_df = pd.DataFrame(st.session_state['paper_trade_history']); st.dataframe(hist_df)
+        if 'PnL' in hist_df.columns:
+            total_realized = hist_df['PnL'].sum(); win_trades = hist_df[hist_df['PnL'] > 0]
+            st.metric("Total Realized P&L", f"{currency}{total_realized:,.2f}")
+            if len(hist_df[~hist_df['PnL'].isna()]) > 0:
+                st.metric("Win Rate", f"{len(win_trades) / len(hist_df[~hist_df['PnL'].isna()]) * 100:.1f}%")
+    else: st.info("No trades executed yet.")
+    if st.button("Reset Paper Account"):
+        st.session_state['paper_balance'] = 100000; st.session_state['paper_positions'] = []; st.session_state['paper_trade_history'] = []; st.rerun()
 
 elif active_tab == "🧙 Strategy Wizard":
-    # ... (unchanged)
-    pass
+    st.title("🧙 Strategy Wizard")
+    signal_w = get_intraday_signal(asset_choice, ticker)
+    if signal_w is not None and 'error' not in signal_w:
+        st.write(f"**Market Regime:** {signal_w['regime']}")
+        st.write(f"**Vol Environment:** {signal_w['vol_environment']}")
+        st.write(f"**Suggested Strategy:** {signal_w['suggested_strategy']}")
+        st.write(f"**Confidence:** {signal_w['confidence']}%")
+        dte_w = st.slider("Select DTE", 0, 7, 4)
+        risk_perc = st.slider("Risk % per trade", 0.5, 5.0, 1.0, 0.5)
+        if st.button("Execute via Paper Trading"):
+            qty = (st.session_state['paper_balance'] * risk_perc / 100) / asset_spot
+            direction = "Long" if "Bull" in signal_w['suggested_strategy'] or "Long" in signal_w['direction'] else "Short"
+            cost = qty * asset_spot
+            if cost <= st.session_state['paper_balance']:
+                st.session_state['paper_balance'] -= cost
+                st.session_state['paper_positions'].append({
+                    'Asset': asset_choice, 'Direction': direction, 'Qty': qty,
+                    'Entry': asset_spot, 'Type': 'Spot',
+                    'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                })
+                st.success(f"Opened {direction} {qty:.4f} {asset_choice} @ {currency}{asset_spot:,.2f}")
+            else:
+                st.error("Insufficient balance.")
+    else:
+        st.warning("Signal unavailable for strategy wizard.")
 
 elif active_tab == "📓 Journal":
-    # ... (unchanged)
-    pass
+    st.title("📓 Trading Journal & Analytics")
+    if st.button("📸 Log Current Snapshot"):
+        snapshot = {
+            'timestamp': datetime.now().isoformat(),
+            'asset': asset_choice,
+            'spot': asset_spot,
+            'garch_vol': garch_vol_asset,
+            'gjrgarch_vol': gjrgarch_vol,
+            'park_vol': park_vol,
+            'ivr': ivr_val,
+            'ivp': ivp_val,
+            'corr': corr_val,
+            'trade_bias': trade_bias_label,
+            'playbook': playbook_strategies,
+        }
+        st.session_state.setdefault('snapshots', []).append(snapshot)
+        st.success("Snapshot saved!")
+    with st.expander("➕ New Trade Entry"):
+        with st.form("trade_form"):
+            c1,c2,c3 = st.columns(3)
+            asset = c1.selectbox("Asset", list(TICKER_DICT.keys()), key="journal_asset")
+            dir = c2.selectbox("Direction", ["Long","Short"])
+            entry = c3.number_input("Entry Price", min_value=0.0, step=0.01, format="%.2f")
+            exit_p = st.number_input("Exit Price", min_value=0.0, step=0.01, format="%.2f")
+            qty = st.number_input("Quantity", min_value=0.0, step=0.01, format="%.4f")
+            date = st.date_input("Date", datetime.today()); notes = st.text_area("Notes")
+            if st.form_submit_button("Log Trade"):
+                if entry<=0 or exit_p<=0 or qty<=0: st.error("Prices and quantity must be positive.")
+                else:
+                    pnl = (exit_p-entry)*qty if dir=="Long" else (entry-exit_p)*qty
+                    regime_tag = f"IVR={ivr_val:.0f}, GARCH={garch_vol_asset:.0f}, Corr={corr_val:.2f}"
+                    st.session_state['trade_journal'].append({
+                        "Date":date.strftime("%Y-%m-%d"),"Asset":asset,"Direction":dir,
+                        "Entry":entry,"Exit":exit_p,"Quantity":qty,"P&L":round(pnl,2),"Notes":notes,
+                        "Regime": regime_tag
+                    })
+                    st.success("Trade logged!")
+    snapshots = st.session_state.get('snapshots', [])
+    if snapshots:
+        st.subheader("📸 Saved Snapshots")
+        df_snaps = pd.DataFrame(snapshots)
+        st.dataframe(df_snaps)
+    if st.session_state['trade_journal']:
+        jdf = pd.DataFrame(st.session_state['trade_journal'])
+        if not jdf.empty:
+            st.subheader("📈 Performance Analytics")
+            jdf['Date'] = pd.to_datetime(jdf['Date'])
+            jdf = jdf.sort_values('Date')
+            jdf['Cumulative P&L'] = jdf['P&L'].cumsum()
+            fig, ax = plt.subplots(figsize=(12,6))
+            ax.plot(jdf['Date'], jdf['Cumulative P&L'], marker='o', color='cyan')
+            ax.set_title("Cumulative P&L", fontweight='bold')
+            ax.grid(True, color='#2A2A2A')
+            st.pyplot(fig)
+            if 'Regime' in jdf.columns and not jdf['Regime'].isnull().all():
+                regime_stats = jdf.groupby('Regime').agg(
+                    Win_Rate = ('P&L', lambda x: (x>0).mean()*100),
+                    Total_PnL = ('P&L', 'sum'),
+                    Count = ('P&L', 'count')
+                ).round(2)
+                st.subheader("📊 Strategy Performance by Regime")
+                st.dataframe(regime_stats.style.format({'Win_Rate':'{:.1f}%', 'Total_PnL':f'{currency}{{:,.2f}}'}))
+            total_trades = len(jdf)
+            if total_trades > 0:
+                wins = jdf[jdf['P&L'] > 0]
+                losses = jdf[jdf['P&L'] < 0]
+                win_rate = len(wins)/total_trades if total_trades else 0
+                avg_win = wins['P&L'].mean() if not wins.empty else 0
+                avg_loss = abs(losses['P&L'].mean()) if not losses.empty else 1
+                if avg_loss > 0:
+                    b = avg_win / avg_loss
+                    kelly = win_rate - (1-win_rate)/b
+                    kelly = max(0, min(kelly, 0.25))
+                else:
+                    kelly = 0
+                st.metric("Optimal Kelly Fraction", f"{kelly:.2%}")
+                st.caption(f"Based on {total_trades} trades – suggests risking {kelly*100:.1f}% of capital per trade.")
+    else:
+        st.info("No trades recorded yet.")
 
 st.markdown("---")
-st.caption("AlphaQuant Terminal Pro · Live Trading Cockpit")
+st.caption("AlphaQuant Terminal Pro · Live & Advanced Analytics")
