@@ -1,9 +1,6 @@
-# AlphaQuant Terminal Pro — Enhanced Version
-# Run with:  streamlit run alphaquant_terminal_enhanced.py
+# AlphaQuant Terminal Pro — Simplified Version (No Paper Trading / Wizard / Journal)
+# Run with:  streamlit run alphaquant_simple.py
 
-# ─────────────────────────────────────────────────────────────────────────────
-# IMPORTS & CONFIG
-# ─────────────────────────────────────────────────────────────────────────────
 import time, logging, os, json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
@@ -33,7 +30,7 @@ except ImportError:
     ML_AVAILABLE = False
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONFIGURATION (single source of truth)
+# CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 @dataclass
 class Config:
@@ -64,7 +61,7 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SESSION STATE DEFAULTS
+# SESSION STATE DEFAULTS (simplified – no paper trading or risk settings)
 # ─────────────────────────────────────────────────────────────────────────────
 _SESSION_DEFAULTS = {
     "market": "Crypto",
@@ -74,39 +71,97 @@ _SESSION_DEFAULTS = {
     "active_tab": "📊 Dashboard",
     "analysis_module": "Hurst Exponent",
     "hist_data": {},
-    "paper_balance": config.DEFAULT_PAPER_BALANCE,
+    "paper_balance": config.DEFAULT_PAPER_BALANCE,  # kept for consistency but not used
     "paper_positions": [],
     "paper_history": [],
     "trade_journal": [],
     "snapshots": [],
-    "alert_price": 0.0,
-    "alert_vol": 0.0,
-    "auto_exit": True,
     "ml_model": None,
     "ml_trained": False,
-    "stop_loss_pct": 0.02,   # 2% stop loss default
-    "take_profit_pct": 0.05, # 5% take profit default
 }
 for k, v in _SESSION_DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PAGE CONFIG & THEME (unchanged, but enhanced with export button styles)
+# PAGE CONFIG & THEME
 # ─────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="AlphaQuant Terminal Pro", layout="wide",
+st.set_page_config(page_title="AlphaQuant Terminal", layout="wide",
                    initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap');
-  /* ... same styling as before ... */
+  html, body, .stApp {
+    font-family: 'Syne', sans-serif;
+    background: #0a0a0f;
+    color: #e0e0f0;
+  }
+  [data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0d0d1a 0%, #12122a 100%);
+    border-right: 1px solid #1e1e3a;
+  }
+  .aq-card {
+    background: linear-gradient(135deg, #0f0f1e 0%, #1a1a2e 100%);
+    border: 1px solid #2a2a4a;
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 12px;
+    transition: border-color 0.2s ease;
+  }
+  .aq-card:hover { border-color: #4a4aaa; }
+  .aq-card-label {
+    font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase;
+    color: #6666aa; margin-bottom: 4px; font-family: 'JetBrains Mono', monospace;
+  }
+  .aq-card-value {
+    font-size: 1.6rem; font-weight: 800; color: #ffffff;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .aq-card-delta {
+    font-size: 0.82rem; margin-top: 4px; font-family: 'JetBrains Mono', monospace;
+  }
+  .aq-positive { color: #00e5a0; }
+  .aq-negative { color: #ff4d6a; }
+  .aq-neutral  { color: #aaaacc; }
+  .aq-tile {
+    background: rgba(255,255,255,0.03); border: 1px solid #1e1e3a;
+    border-radius: 10px; padding: 12px 14px; text-align: center; cursor: pointer; transition: all 0.2s ease;
+  }
+  .aq-tile:hover { background: rgba(100,100,255,0.08); border-color: #4a4aaa; transform: translateY(-2px); }
+  .aq-tile-key   { font-size: 0.7rem; color: #6666aa; letter-spacing: 0.08em; text-transform: uppercase; }
+  .aq-tile-val   { font-size: 1.05rem; font-weight: 700; color: #fff; margin: 4px 0; font-family: 'JetBrains Mono', monospace; }
+  .aq-tile-sub   { font-size: 0.68rem; color: #555588; }
+  .aq-section {
+    font-size: 1.1rem; font-weight: 800; color: #c0c0ff; letter-spacing: 0.05em;
+    margin: 22px 0 10px; border-left: 3px solid #5555ff; padding-left: 10px;
+  }
+  .aq-info {
+    background: rgba(85,85,255,0.08); border: 1px solid rgba(85,85,255,0.25);
+    border-radius: 8px; padding: 12px 16px; font-size: 0.88rem; color: #b0b0dd; margin: 8px 0;
+  }
+  .aq-badge {
+    display: inline-block; padding: 3px 10px; border-radius: 20px;
+    font-size: 0.75rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.06em;
+  }
+  .aq-badge-bull { background: rgba(0,229,160,0.15); color: #00e5a0; border: 1px solid #00e5a0; }
+  .aq-badge-bear { background: rgba(255,77,106,0.15); color: #ff4d6a; border: 1px solid #ff4d6a; }
+  .aq-badge-neut { background: rgba(170,170,200,0.15); color: #aaaacc; border: 1px solid #aaaacc; }
+  .stButton > button {
+    background: linear-gradient(135deg, #3333aa, #5555ff); color: white;
+    border: none; border-radius: 8px; font-weight: 700; font-family: 'Syne', sans-serif;
+    letter-spacing: 0.04em; transition: all 0.2s ease;
+  }
+  .stButton > button:hover { transform: scale(1.02); box-shadow: 0 4px 16px rgba(85,85,255,0.4); }
+  .element-container { background: transparent !important; }
+  @media (max-width: 768px) { .aq-card-value { font-size: 1.2rem; } }
 </style>
 """, unsafe_allow_html=True)
+
 plt.style.use("dark_background")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DATA UTILITIES (with parallel fetching, smarter caching, fallback)
+# DATA UTILITIES (parallel, robust, caching)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def yf_download_robust(ticker: str, period: str = "1y", interval: str = "1d",
@@ -127,7 +182,6 @@ def yf_download_robust(ticker: str, period: str = "1y", interval: str = "1d",
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_history_parallel(ticker_dict: Dict[str, str]) -> Dict[str, pd.DataFrame]:
-    """Download 2-year history for all assets in parallel."""
     results = {}
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
         future_to_name = {
@@ -234,7 +288,7 @@ def fetch_india_vix(period: str = "1y") -> Optional[pd.Series]:
     return df["Close"].squeeze()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# QUANTITATIVE FUNCTIONS (enhanced with better error handling & docs)
+# QUANTITATIVE FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
 
 def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
@@ -334,24 +388,8 @@ def black_scholes_greeks(S: float, K: float, T: float, r: float,
     except Exception:
         return {"price": 0.0, "delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
 
-def portfolio_greeks(positions: List[Dict], spot: float, sigma: float,
-                     r: float = 0.05) -> Dict[str, float]:
-    agg = {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
-    for pos in positions:
-        sign = 1 if pos["Direction"] == "Long" else -1
-        if pos.get("Type", "Spot") == "Spot":
-            agg["delta"] += sign
-        else:
-            K = pos.get("Strike", spot)
-            T = pos.get("Expiry", 1) / 252
-            g = black_scholes_greeks(spot, K, T, r, sigma, pos.get("OptionType", "call"))
-            for key in agg:
-                agg[key] += sign * g[key]
-    margin = abs(agg["delta"]) * spot * 0.10
-    return {**agg, "margin_est": margin}
-
 # ─────────────────────────────────────────────────────────────────────────────
-# ML MODEL (enhanced with more features)
+# ML MODEL
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_features(close: pd.Series) -> pd.DataFrame:
@@ -362,7 +400,6 @@ def build_features(close: pd.Series) -> pd.DataFrame:
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
     ema26 = df["close"].ewm(span=26, adjust=False).mean()
     df["macd"] = ema12 - ema26
-    # Additional momentum features
     df["mom5"] = df["close"].pct_change(5)
     df["mom20"] = df["close"].pct_change(20)
     df["vol20"] = df["ret"].rolling(20).std()
@@ -404,16 +441,14 @@ def ml_predict(close: pd.Series) -> Optional[int]:
         return None
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SIGNAL ENGINE (extended with Deribit skew/term placeholders)
+# SIGNAL ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_option_skew(chain: pd.DataFrame) -> Optional[float]:
-    """Calculate 25-delta call vs put IV spread."""
     calls = chain[chain["option_type"] == "call"].copy()
     puts = chain[chain["option_type"] == "put"].copy()
     if calls.empty or puts.empty:
         return None
-    # approximate 25-delta: find closest delta to 0.25/-0.25
     call_25 = calls.iloc[(calls["delta"] - 0.25).abs().argsort()[:1]]
     put_25 = puts.iloc[(puts["delta"] + 0.25).abs().argsort()[:1]]
     if call_25.empty or put_25.empty:
@@ -446,12 +481,10 @@ def generate_signal(
     else:
         regime = "random_walk"
 
-    # Historical vol
     log_ret = np.log(close / close.shift(1)).dropna()
     hist_vol_20 = float(log_ret.tail(21).std() * np.sqrt(trading_days) * 100)
     daily_move = spot * (garch_vol / 100) / np.sqrt(trading_days)
 
-    # Liquidity sweeps from intraday
     sweep_up = sweep_down = False
     if intra_df is not None and not intra_df.empty:
         h = intra_df["High"]; l = intra_df["Low"]; c = intra_df["Close"]
@@ -460,7 +493,6 @@ def generate_signal(
         sweep_up = bool(((h > prev_high) & (c < prev_high)).any())
         sweep_down = bool(((l < prev_low) & (c > prev_low)).any())
 
-    # Volatility environment voting
     vol_votes = 0
     vol_env = "neutral"
     def _vote(expensive: bool, cheap: bool):
@@ -486,7 +518,6 @@ def generate_signal(
     if vol_votes == 0:
         vol_env = "neutral"
 
-    # Strategy logic
     direction = "neutral"
     strategy = "Iron Condor"
     confidence = 50
@@ -519,7 +550,7 @@ def generate_signal(
         confidence += 10
         risk_level = "low" if strategy == "Iron Condor" else "medium"
 
-    else:   # random walk
+    else:
         if vol_env == "expensive":
             strategy = "Short Strangle"
             risk_level = "medium"
@@ -530,7 +561,6 @@ def generate_signal(
             direction = "bullish"
             strategy = "Bull Call Spread"
 
-    # ML overlay
     ml_pred = ml_predict(close)
     if ml_pred is not None:
         if (ml_pred == 1 and direction == "bullish") or (ml_pred == 0 and direction == "bearish"):
@@ -539,19 +569,14 @@ def generate_signal(
             confidence -= 5
     confidence = max(0, min(100, confidence))
 
-    # Option skew (if available)
     skew = compute_option_skew(deribit_chain) if deribit_chain is not None else None
     if skew is not None:
-        if skew > 5:     # calls expensive relative to puts
-            if direction == "bullish":
-                confidence -= 5
-            elif direction == "bearish":
-                confidence += 5
-        elif skew < -5:  # puts expensive
-            if direction == "bullish":
-                confidence += 5
-            elif direction == "bearish":
-                confidence -= 5
+        if skew > 5:
+            if direction == "bullish": confidence -= 5
+            elif direction == "bearish": confidence += 5
+        elif skew < -5:
+            if direction == "bullish": confidence += 5
+            elif direction == "bearish": confidence -= 5
 
     parts = [
         f"H={hurst:.3f}({regime})", f"GV={garch_vol:.1f}%", f"HV={hist_vol_20:.1f}%",
@@ -574,11 +599,19 @@ def generate_signal(
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHARTING FUNCTIONS (keep existing, added export helper)
+# CHARTING FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
-# ... [All chart functions remain identical to original for brevity] ...
-# I'll include the enhanced versions here but to avoid clutter, they are the same as before.
-# I'll add a universal download button for matplotlib figures.
+
+def _fig_base(title: str, figsize=(12, 6)) -> tuple:
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.set_facecolor("#0a0a0f")
+    fig.patch.set_facecolor("#0a0a0f")
+    ax.set_title(title, color="#c0c0ff", fontsize=13, fontweight="bold", pad=12)
+    ax.tick_params(colors="#666688")
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#1e1e3a")
+    ax.grid(True, color="#14142a", linestyle=":")
+    return fig, ax
 
 def fig_to_download(fig: plt.Figure) -> bytes:
     import io
@@ -587,8 +620,249 @@ def fig_to_download(fig: plt.Figure) -> bytes:
     buf.seek(0)
     return buf.read()
 
-# ... Include all chart_* functions from original (chart_hurst, etc.) ...
-# (Due to length, I'll only show the structure; the actual code would be copied verbatim from the original.)
+def chart_hurst(close: pd.Series) -> Optional[plt.Figure]:
+    if len(close) < 120:
+        return None
+    log_p = np.log(close)
+    h_series = log_p.rolling(60).apply(lambda x: calculate_hurst(x.values), raw=False)
+    df = pd.DataFrame({"Close": close, "Hurst": h_series}).dropna()
+    if df.empty:
+        return None
+
+    h_now = df["Hurst"].iloc[-1]
+    if h_now > 0.55: color, label = "#00e5a0", "TRENDING"
+    elif h_now < 0.45: color, label = "#ff4d6a", "MEAN REVERTING"
+    else: color, label = "#ffaa33", "RANDOM WALK"
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={"height_ratios": [2, 1]})
+    for ax in (ax1, ax2):
+        ax.set_facecolor("#0a0a0f")
+        ax.grid(True, color="#14142a", linestyle=":")
+        for sp in ax.spines.values():
+            sp.set_edgecolor("#1e1e3a")
+        ax.tick_params(colors="#666688")
+    fig.patch.set_facecolor("#0a0a0f")
+
+    ax1.plot(df.index, df["Close"], color="#7777ff", linewidth=1.5, label="Price")
+    ax1.axvspan(df.index[-15], df.index[-1], color=color, alpha=0.08)
+    ax1.set_title("Market Regime — Hurst Exponent", color="#c0c0ff", fontsize=13, fontweight="bold")
+    ax1.legend(facecolor="#0f0f1e", edgecolor="#1e1e3a")
+
+    ax2.plot(df.index, df["Hurst"], color="#00ccff", linewidth=1.8)
+    ax2.axhline(0.55, color="#00e5a0", linestyle="--", linewidth=1.2, label="Trending >0.55")
+    ax2.axhline(0.45, color="#ff4d6a", linestyle="--", linewidth=1.2, label="Mean Rev. <0.45")
+    ax2.axhline(0.50, color="#333355", linewidth=1.0)
+    ax2.fill_between(df.index, 0.55, df["Hurst"], where=df["Hurst"] > 0.55, color="#00e5a0", alpha=0.15, interpolate=True)
+    ax2.fill_between(df.index, 0.45, df["Hurst"], where=df["Hurst"] < 0.45, color="#ff4d6a", alpha=0.15, interpolate=True)
+    ax2.set_ylim(0.3, 0.7)
+    ax2.legend(facecolor="#0f0f1e", edgecolor="#1e1e3a", fontsize=9)
+
+    bbox = dict(boxstyle="round,pad=0.5", facecolor="#0f0f1e", edgecolor=color, linewidth=1.5, alpha=0.9)
+    ax1.text(0.02, 0.05, f"H = {h_now:.3f}  →  {label}", transform=ax1.transAxes, color=color,
+             fontsize=11, fontweight="bold", bbox=bbox, va="bottom")
+    plt.tight_layout()
+    return fig
+
+def chart_volatility_cone(close: pd.Series, trading_days: int = 252) -> Optional[plt.Figure]:
+    log_ret = np.log(close / close.shift(1)).dropna()
+    windows = [5, 10, 20, 30, 60, 90, 120, 180, 252]
+    stats = {"max": [], "min": [], "median": [], "current": []}
+    for w in windows:
+        rv = log_ret.rolling(w).std() * np.sqrt(trading_days) * 100
+        rv = rv.dropna()
+        if rv.empty:
+            for v in stats.values():
+                v.append(np.nan)
+        else:
+            stats["max"].append(rv.max())
+            stats["min"].append(rv.min())
+            stats["median"].append(rv.median())
+            stats["current"].append(rv.iloc[-1])
+
+    fig, ax = _fig_base("Volatility Cone")
+    ax.plot(windows, stats["max"], "o-", color="#ff4d6a", label="Max", linewidth=1.5)
+    ax.plot(windows, stats["min"], "o-", color="#00e5a0", label="Min", linewidth=1.5)
+    ax.plot(windows, stats["median"], "s--", color="#aaaacc", label="Median", linewidth=1.2)
+    ax.plot(windows, stats["current"], "X-", color="#ffdd44", label="Current", linewidth=2, markersize=10)
+    ax.fill_between(windows, stats["min"], stats["max"], color="#7777ff", alpha=0.07)
+    ax.set_xlabel("Window (days)", color="#666688")
+    ax.set_ylabel("Annualised Vol (%)", color="#666688")
+    ax.legend(facecolor="#0f0f1e", edgecolor="#1e1e3a")
+    plt.tight_layout()
+    return fig
+
+def chart_vrp(close: pd.Series, iv_series: Optional[pd.Series], trading_days: int = 252) -> Optional[plt.Figure]:
+    log_ret = np.log(close / close.shift(1)).dropna()
+    hv = log_ret.rolling(20).std() * np.sqrt(trading_days) * 100
+    hv = hv.dropna()
+    if iv_series is None:
+        return None
+    common = hv.index.intersection(iv_series.index)
+    if len(common) < 10:
+        return None
+    hv_c = hv[common]; iv_c = iv_series[common]
+    vrp = iv_c - hv_c
+    label = "Positive VRP → Sell Premium" if float(vrp.iloc[-1]) > 0 else "Negative VRP → Buy Premium"
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), gridspec_kw={"height_ratios": [2, 1]})
+    for ax in (ax1, ax2):
+        ax.set_facecolor("#0a0a0f")
+        ax.grid(True, color="#14142a", linestyle=":")
+        for sp in ax.spines.values():
+            sp.set_edgecolor("#1e1e3a")
+        ax.tick_params(colors="#666688")
+    fig.patch.set_facecolor("#0a0a0f")
+
+    ax1.plot(common, iv_c, color="#00ccff", linewidth=1.5, label="Implied Vol")
+    ax1.plot(common, hv_c, color="#ffaa33", linewidth=1.5, label="20d Realised Vol")
+    ax1.fill_between(common, hv_c, iv_c, where=(iv_c > hv_c), color="#00e5a0", alpha=0.15, interpolate=True)
+    ax1.fill_between(common, hv_c, iv_c, where=(iv_c <= hv_c), color="#ff4d6a", alpha=0.15, interpolate=True)
+    ax1.set_title("Volatility Risk Premium (VRP)", color="#c0c0ff", fontsize=13, fontweight="bold")
+    ax1.legend(facecolor="#0f0f1e", edgecolor="#1e1e3a")
+
+    colors = ["#00e5a0" if v > 0 else "#ff4d6a" for v in vrp]
+    ax2.bar(common, vrp, color=colors, alpha=0.7)
+    ax2.axhline(0, color="#444466")
+    ax2.set_ylabel("VRP (%)", color="#666688")
+
+    bbox = dict(boxstyle="round", facecolor="#0f0f1e", edgecolor="#5555ff")
+    ax1.text(0.02, 0.05, f"VRP: {float(vrp.iloc[-1]):+.1f}%  {label}",
+             transform=ax1.transAxes, color="#c0c0ff", fontsize=10, bbox=bbox, va="bottom")
+    plt.tight_layout()
+    return fig
+
+def chart_ivr(close: pd.Series, iv_series: Optional[pd.Series], label: str = "Vol") -> Optional[plt.Figure]:
+    log_ret = np.log(close / close.shift(1)).dropna()
+    rolling_vol = log_ret.rolling(20).std() * np.sqrt(252) * 100
+    series = iv_series if iv_series is not None else rolling_vol.dropna()
+    cur = float(series.iloc[-1])
+    vmin = float(series.min()); vmax = float(series.max())
+    ivr = ((cur - vmin) / (vmax - vmin)) * 100 if vmax != vmin else 50.0
+    ivp = float((series < cur).mean()) * 100
+
+    fig, ax = _fig_base(f"IV Rank & IV Percentile — {label}")
+    ax.plot(series.index, series, color="#00ccff", linewidth=1.5, label=label)
+    ax.axhline(vmax, color="#ff4d6a", linestyle="--", linewidth=1, alpha=0.7)
+    ax.axhline(vmin, color="#00e5a0", linestyle="--", linewidth=1, alpha=0.7)
+    ax.axhline(cur, color="#ffffff", linestyle="-", linewidth=1.5)
+    bbox = dict(boxstyle="round", facecolor="#0f0f1e", edgecolor="#5555ff")
+    ax.text(0.02, 0.92, f"IVR: {ivr:.1f}%   IVP: {ivp:.1f}%\n{'High IV → Sell Premium' if ivr > 50 else 'Low IV → Buy Premium'}",
+            transform=ax.transAxes, color="#c0c0ff", fontsize=10, bbox=bbox, va="top")
+    ax.legend(facecolor="#0f0f1e", edgecolor="#1e1e3a")
+    plt.tight_layout()
+    return fig
+
+def chart_expected_move(spot: float, iv_pct: float, recent_close: pd.Series,
+                         currency: str = "$", trading_days: int = 252) -> plt.Figure:
+    daily_vol = iv_pct / 100 / np.sqrt(trading_days)
+    daily_move = spot * daily_vol
+    upper = spot + daily_move
+    lower = spot - daily_move
+
+    fig, ax = _fig_base("Expected Daily Move (±1σ)", figsize=(12, 6))
+    x = np.arange(len(recent_close))
+    ax.plot(x, recent_close.values, color="#7777ff", linewidth=2, marker="o", markersize=4, label="Price")
+    t = len(recent_close)
+    ax.scatter(t, upper, color="#00e5a0", s=150, zorder=5, marker="^")
+    ax.scatter(t, lower, color="#ff4d6a", s=150, zorder=5, marker="v")
+    ax.hlines([upper, spot, lower], xmin=t-1, xmax=t, colors=["#00e5a0", "#ffffff", "#ff4d6a"], linestyles="--", linewidth=1.4)
+    ax.fill_between([t-1, t], [spot, lower], [spot, upper], color="#5555ff", alpha=0.12)
+    ax.set_xticks([])
+    bbox = dict(boxstyle="round,pad=0.6", facecolor="#0f0f1e", edgecolor="#5555ff", linewidth=1.5)
+    ax.text(0.02, 0.5, f"Spot:  {currency}{spot:,.2f}\nIV:    {iv_pct:.1f}%\n±Move: {currency}{daily_move:,.1f}\nUpper: {currency}{upper:,.2f}\nLower: {currency}{lower:,.2f}",
+            transform=ax.transAxes, color="#c0c0ff", fontsize=11, fontweight="bold", bbox=bbox, va="center")
+    ax.legend(facecolor="#0f0f1e", edgecolor="#1e1e3a")
+    plt.tight_layout()
+    return fig
+
+def chart_payoff(legs: List[dict], spot: float) -> plt.Figure:
+    prices = np.linspace(spot * 0.80, spot * 1.20, 300)
+    payoff = np.zeros_like(prices)
+    for leg in legs:
+        K = leg["K"]
+        prem = leg["premium"]
+        sign = leg["sign"]
+        is_call = "Call" in leg["label"]
+        for i, p in enumerate(prices):
+            intrinsic = max(0.0, p - K) if is_call else max(0.0, K - p)
+            payoff[i] += sign * (intrinsic - prem)
+
+    fig, ax = _fig_base("Strategy Payoff at Expiry", figsize=(10, 5))
+    ax.plot(prices, payoff, color="#00ccff", linewidth=2.5)
+    ax.axhline(0, color="#444466", linewidth=1)
+    ax.axvline(spot, color="#ffaa33", linewidth=1.5, linestyle="--", label=f"Spot {spot:,.2f}")
+    ax.fill_between(prices, 0, payoff, where=(payoff > 0), color="#00e5a0", alpha=0.15, interpolate=True)
+    ax.fill_between(prices, 0, payoff, where=(payoff <= 0), color="#ff4d6a", alpha=0.15, interpolate=True)
+    ax.set_xlabel("Underlying Price at Expiry", color="#666688")
+    ax.set_ylabel("Profit / Loss", color="#666688")
+    ax.legend(facecolor="#0f0f1e", edgecolor="#1e1e3a")
+    plt.tight_layout()
+    return fig
+
+def chart_rsi(close: pd.Series) -> plt.Figure:
+    rsi = calculate_rsi(close).dropna()
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 6), gridspec_kw={"height_ratios": [2, 1]})
+    for ax in (ax1, ax2):
+        ax.set_facecolor("#0a0a0f")
+        ax.grid(True, color="#14142a", linestyle=":")
+        for sp in ax.spines.values():
+            sp.set_edgecolor("#1e1e3a")
+        ax.tick_params(colors="#666688")
+    fig.patch.set_facecolor("#0a0a0f")
+
+    ax1.plot(close.index, close, color="#7777ff", linewidth=1.5, label="Price")
+    ax1.set_title("Price & RSI (Wilder, 14)", color="#c0c0ff", fontsize=13, fontweight="bold")
+    ax1.legend(facecolor="#0f0f1e", edgecolor="#1e1e3a")
+
+    ax2.plot(rsi.index, rsi, color="#00ccff", linewidth=1.5)
+    ax2.axhline(70, color="#ff4d6a", linestyle="--", linewidth=1.2, label="OB 70")
+    ax2.axhline(30, color="#00e5a0", linestyle="--", linewidth=1.2, label="OS 30")
+    ax2.fill_between(rsi.index, 70, rsi, where=(rsi > 70), color="#ff4d6a", alpha=0.15, interpolate=True)
+    ax2.fill_between(rsi.index, 30, rsi, where=(rsi < 30), color="#00e5a0", alpha=0.15, interpolate=True)
+    ax2.set_ylim(0, 100)
+    ax2.legend(facecolor="#0f0f1e", edgecolor="#1e1e3a", fontsize=9)
+    plt.tight_layout()
+    return fig
+
+def chart_correlation(df_pair: pd.DataFrame, names: Tuple[str, str]) -> Optional[plt.Figure]:
+    df = df_pair.dropna()
+    if df.shape[1] != 2 or len(df) < 25:
+        return None
+    df.columns = list(names)
+    normalised = df / df.iloc[0] * 100
+    log_ret = np.log(df / df.shift(1)).dropna()
+    roll_corr = log_ret[names[0]].rolling(20).corr(log_ret[names[1]])
+    cur_corr = float(roll_corr.iloc[-1])
+
+    if cur_corr > 0.8: corr_color, corr_label = "#00e5a0", "High Correlation"
+    elif cur_corr < 0.5: corr_color, corr_label = "#ff4d6a", "Decoupling"
+    else: corr_color, corr_label = "#ffaa33", "Moderate"
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), gridspec_kw={"height_ratios": [2, 1]})
+    for ax in (ax1, ax2):
+        ax.set_facecolor("#0a0a0f")
+        ax.grid(True, color="#14142a", linestyle=":")
+        for sp in ax.spines.values():
+            sp.set_edgecolor("#1e1e3a")
+        ax.tick_params(colors="#666688")
+    fig.patch.set_facecolor("#0a0a0f")
+
+    ax1.plot(normalised.index, normalised[names[0]], color="#7777ff", linewidth=1.5, label=names[0])
+    ax1.plot(normalised.index, normalised[names[1]], color="#00ccff", linewidth=1.5, label=names[1])
+    ax1.fill_between(normalised.index, normalised[names[0]], normalised[names[1]], alpha=0.10, color="#5555ff")
+    ax1.set_title(f"Correlation: {names[0]} vs {names[1]}", color="#c0c0ff", fontsize=13, fontweight="bold")
+    ax1.legend(facecolor="#0f0f1e", edgecolor="#1e1e3a")
+
+    ax2.plot(roll_corr.index, roll_corr, color="#ffaa33", linewidth=1.8)
+    ax2.axhline(0.8, color="#00e5a0", linestyle="--", linewidth=1)
+    ax2.axhline(0.5, color="#ff4d6a", linestyle="--", linewidth=1)
+    ax2.set_ylim(-0.2, 1.1); ax2.set_ylabel("20-Day Corr", color="#666688")
+
+    bbox = dict(boxstyle="round", facecolor="#0f0f1e", edgecolor=corr_color)
+    ax1.text(0.02, 0.05, f"Corr: {cur_corr:.2f}  →  {corr_label}", transform=ax1.transAxes, color=corr_color,
+             fontsize=10, fontweight="bold", bbox=bbox)
+    plt.tight_layout()
+    return fig
 
 # ─────────────────────────────────────────────────────────────────────────────
 # UI COMPONENTS
@@ -596,12 +870,11 @@ def fig_to_download(fig: plt.Figure) -> bytes:
 
 def metric_card(label: str, value: str, delta: str = "", positive: Optional[bool] = None):
     delta_class = ("aq-positive" if positive is True else "aq-negative" if positive is False else "aq-neutral")
-    st.markdown(f"""
-    <div class="aq-card">
-        <div class="aq-card-label">{label}</div>
-        <div class="aq-card-value">{value}</div>
-        <div class="aq-card-delta {delta_class}">{delta}</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="aq-card">
+              <div class="aq-card-label">{label}</div>
+              <div class="aq-card-value">{value}</div>
+              <div class="aq-card-delta {delta_class}">{delta}</div>
+            </div>""", unsafe_allow_html=True)
 
 def section(title: str):
     st.markdown(f'<div class="aq-section">{title}</div>', unsafe_allow_html=True)
@@ -617,11 +890,12 @@ def direction_badge(direction: str) -> str:
     return '<span class="aq-badge aq-badge-neut">◆ NEUTRAL</span>'
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SIDEBAR (unchanged, but stop-loss/take-profit sliders added)
+# SIDEBAR (simplified)
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## ⚡ AlphaQuant Pro")
+    st.markdown("## ⚡ AlphaQuant Terminal")
     st.markdown("---")
+
     market = st.radio("Market", ["Crypto", "Indian Market"],
                       index=0 if st.session_state["market"] == "Crypto" else 1, horizontal=True)
     if market != st.session_state["market"]:
@@ -639,21 +913,12 @@ with st.sidebar:
     ticker = TICKER_DICT[asset_choice]
 
     st.markdown("---")
-    tab = st.radio("Navigate", ["📊 Dashboard", "📈 Technical", "📄 Paper Trading",
-                                "🧙 Strategy Wizard", "📓 Journal"])
+    tab = st.radio("Navigate", ["📊 Dashboard", "📈 Technical"])
     st.session_state["active_tab"] = tab
 
     st.markdown("---")
     live_mode = st.checkbox("🟢 Live Mode", value=st.session_state["live_mode"])
     st.session_state["live_mode"] = live_mode
-
-    with st.expander("🔔 Price Alerts"):
-        alert_price = st.number_input("Price Alert", value=st.session_state["alert_price"], step=100.0)
-        alert_vol = st.number_input("GARCH Vol Alert (%)", value=st.session_state["alert_vol"], step=1.0)
-        if st.button("Save Alerts"):
-            st.session_state["alert_price"] = alert_price
-            st.session_state["alert_vol"] = alert_vol
-            st.success("Saved!")
 
     if ML_AVAILABLE:
         with st.expander("🧠 ML Model"):
@@ -668,22 +933,15 @@ with st.sidebar:
             if st.session_state["ml_trained"]:
                 st.success("Model ready ✓")
 
-    # Risk management sliders
-    with st.expander("⚙️ Risk Settings"):
-        sl = st.slider("Stop Loss %", 0.5, 10.0, st.session_state["stop_loss_pct"]*100, 0.5) / 100
-        tp = st.slider("Take Profit %", 1.0, 20.0, st.session_state["take_profit_pct"]*100, 0.5) / 100
-        st.session_state["stop_loss_pct"] = sl
-        st.session_state["take_profit_pct"] = tp
-
     st.markdown("---")
     if st.button("🔄 Refresh All Data"):
         st.cache_data.clear()
         st.session_state["hist_data"] = {}
         st.rerun()
-    st.caption("AlphaQuant Terminal Pro · For learning purposes only.")
+    st.caption("AlphaQuant Terminal · For learning purposes only.")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DATA LOADING (parallel, with intraday cached once)
+# DATA LOADING
 # ─────────────────────────────────────────────────────────────────────────────
 if not st.session_state["hist_data"] or set(st.session_state["hist_data"].keys()) != set(TICKER_DICT.keys()):
     with st.spinner("Loading market data..."):
@@ -707,7 +965,6 @@ asset_pct = lp["pct"]
 with st.spinner("Fitting volatility models..."):
     garch_vol, gjr_vol = garch_forecast(ticker, trading_days)
 
-# Derived vol metrics
 park_vol = ivr_val = ivp_val = None
 asset_df = st.session_state["hist_data"].get(asset_choice)
 if asset_df is not None and not asset_df.empty:
@@ -717,22 +974,14 @@ if asset_df is not None and not asset_df.empty:
                                            asset_df["Low"].squeeze().tail(60), trading_days)
     ivr_val, ivp_val = calculate_iv_rank_percentile(close_px, 20)
 
-# Fetch intraday once (reused in signal and live chart)
 intra_15m = fetch_intraday(ticker, "15m")
 
-# Option chain (Deribit only for crypto)
 deribit_chain = None
 if market == "Crypto" and asset_choice in ["Bitcoin", "Ethereum"]:
     coin_map = {"Bitcoin": "BTC", "Ethereum": "ETH"}
     deribit_chain = fetch_option_chain_deribit(coin_map[asset_choice])
 
-# Alerts
-if st.session_state["alert_price"] > 0 and asset_spot >= st.session_state["alert_price"]:
-    st.toast(f"🔔 Price alert: {asset_choice} hit {currency}{st.session_state['alert_price']:,.0f}", icon="🔔")
-if st.session_state["alert_vol"] > 0 and garch_vol >= st.session_state["alert_vol"]:
-    st.toast(f"🔔 Vol alert: GARCH {garch_vol:.1f}% ≥ {st.session_state['alert_vol']:.0f}%", icon="⚠️")
-
-# Correlation pair data (unchanged)
+# Correlation pair
 if market == "Crypto":
     corr_pair_tickers = ["BTC-USD", "ETH-USD"]
     corr_names = ("Bitcoin", "Ethereum")
@@ -750,75 +999,13 @@ def _corr_data(tickers, market_key):
 corr_df = _corr_data(corr_pair_tickers, market)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AUTOMATIC STOP-LOSS/TAKE-PROFIT CHECK (for paper positions)
-# ─────────────────────────────────────────────────────────────────────────────
-def check_paper_risk():
-    """Automatically close positions that hit stop-loss or take-profit."""
-    closed_any = False
-    new_positions = []
-    for pos in st.session_state["paper_positions"]:
-        entry = pos["Entry"]
-        qty = pos["Qty"]
-        direction = pos["Direction"]
-        curr = asset_spot
-        if direction == "Long":
-            pnl_pct = (curr - entry) / entry
-        else:
-            pnl_pct = (entry - curr) / entry
-        # Check limits
-        if pnl_pct <= -st.session_state["stop_loss_pct"]:
-            # Stop loss hit
-            pnl = (curr - entry) * qty if direction == "Long" else (entry - curr) * qty
-            st.session_state["paper_balance"] += entry * qty + pnl
-            st.session_state["paper_history"].append({
-                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "Asset": pos["Asset"], "Direction": direction, "Qty": qty,
-                "Price": curr, "Action": "Stop Loss", "PnL": pnl
-            })
-            st.toast(f"🛑 Stop Loss: {pos['Asset']} {direction} @ {currency}{curr:,.2f}", icon="⛔")
-            closed_any = True
-            continue
-        elif pnl_pct >= st.session_state["take_profit_pct"]:
-            # Take profit hit
-            pnl = (curr - entry) * qty if direction == "Long" else (entry - curr) * qty
-            st.session_state["paper_balance"] += entry * qty + pnl
-            st.session_state["paper_history"].append({
-                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "Asset": pos["Asset"], "Direction": direction, "Qty": qty,
-                "Price": curr, "Action": "Take Profit", "PnL": pnl
-            })
-            st.toast(f"💰 Take Profit: {pos['Asset']} {direction} @ {currency}{curr:,.2f}", icon="✅")
-            closed_any = True
-            continue
-        new_positions.append(pos)
-    if closed_any:
-        st.session_state["paper_positions"] = new_positions
-        st.rerun()
-
-# Run check if auto-exit enabled
-if st.session_state.get("auto_exit", True):
-    check_paper_risk()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB CONTENTS (refactored to use new data and add export buttons)
+# TAB: DASHBOARD
 # ─────────────────────────────────────────────────────────────────────────────
 active_tab = st.session_state["active_tab"]
 
-# Helper to add download button for matplotlib figures
-def add_chart_download(fig: plt.Figure, filename: str, label: str = "Download PNG"):
-    png = fig_to_download(fig)
-    st.download_button(label=label, data=png, file_name=filename, mime="image/png")
-
-# For brevity, I'll include full tab logic but in a compact manner.
-# The full code would replicate the original tabs with minor improvements (download buttons, etc.)
-# I'll produce a streamlined version that retains all original functionality plus enhancements.
-
-# ... [Tabs: Dashboard, Technical, Paper Trading, Wizard, Journal] ...
-# I will now write each tab with the enhancements integrated.
-
 if active_tab == "📊 Dashboard":
     st.title("📊 Market Intelligence Dashboard")
-    # Market Overview
+
     section("Market Overview")
     if market == "Crypto":
         btc_lp = fetch_live_price("BTC-USD")
@@ -846,7 +1033,6 @@ if active_tab == "📊 Dashboard":
         with c4:
             metric_card("GARCH Vol", f"{garch_vol:.1f}%", "1-day ahead forecast")
 
-    # Active Asset
     section(f"Active Asset — {asset_choice}")
     col_a, col_b, col_c, col_d = st.columns(4)
     with col_a:
@@ -858,7 +1044,6 @@ if active_tab == "📊 Dashboard":
     with col_d:
         metric_card("IV Percentile", f"{ivp_val:.0f}%" if ivp_val else "N/A", f"Last update: {lp['ts']}")
 
-    # Signal Engine
     section("Signal Engine")
     with st.spinner("Computing signal..."):
         signal = generate_signal(
@@ -905,7 +1090,6 @@ if active_tab == "📊 Dashboard":
                      f"• Directional OTM: {currency}{asset_spot-daily:,.0f} — {currency}{asset_spot+daily:,.0f}<br>"
                      f"• Short gamma sell zone: {currency}{asset_spot-daily*1.5:,.0f} / {currency}{asset_spot+daily*1.5:,.0f}")
 
-    # Live Chart
     with st.expander("💹 Live Chart & Order Book", expanded=False):
         if intra_15m is not None and not intra_15m.empty:
             fig_live = go.Figure(data=[go.Candlestick(
@@ -943,41 +1127,113 @@ if active_tab == "📊 Dashboard":
                     color = "🟢" if funding < 0 else "🔴"
                     st.caption(f"{color} Funding Rate: {funding:.4f}%  ({'Longs pay shorts' if funding>0 else 'Shorts pay longs'})")
 
-    # Portfolio Greeks
-    with st.expander("📐 Portfolio Greeks"):
-        risk = portfolio_greeks(st.session_state["paper_positions"], asset_spot, garch_vol/100)
-        g1,g2,g3,g4,g5 = st.columns(5)
-        g1.metric("Delta", f"{risk['delta']:+.3f}")
-        g2.metric("Gamma", f"{risk['gamma']:+.4f}")
-        g3.metric("Theta", f"{risk['theta']:+.3f}")
-        g4.metric("Vega", f"{risk['vega']:+.3f}")
-        g5.metric("Margin", f"{currency}{risk['margin_est']:,.0f}")
-
-    # Correlation
     with st.expander("📊 Correlation Analysis"):
-        fig_corr = chart_correlation(corr_df, corr_names)  # function defined elsewhere
+        fig_corr = chart_correlation(corr_df, corr_names)
         if fig_corr:
             st.pyplot(fig_corr)
-            add_chart_download(fig_corr, "correlation.png")
+            png = fig_to_download(fig_corr)
+            st.download_button("Download PNG", data=png, file_name="correlation.png", mime="image/png")
 
-# ... Other tabs would follow the same pattern with download buttons added to charts.
-# For brevity, I'll include placeholders for the rest of the tabs.
-
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB: TECHNICAL
+# ─────────────────────────────────────────────────────────────────────────────
 elif active_tab == "📈 Technical":
     st.title("📈 Technical Analysis")
-    # ... (include all modules from original with export buttons) ...
 
-elif active_tab == "📄 Paper Trading":
-    st.title("📄 Paper Trading")
-    # ... (include paper trading UI + auto stop/tp checks already built in) ...
+    if asset_df is None or asset_df.empty:
+        st.error("No historical data. Try refreshing.")
+        st.stop()
 
-elif active_tab == "🧙 Strategy Wizard":
-    st.title("🧙 Strategy Wizard")
-    # ... (call generate_signal with new parameters) ...
+    close_px = asset_df["Close"].squeeze()
 
-elif active_tab == "📓 Journal":
-    st.title("📓 Trading Journal")
-    # ... (export journal as CSV, etc.) ...
+    MODULES = [
+        "Hurst Exponent",
+        "RSI (Wilder)",
+        "Volatility Cone",
+        "Volatility Risk Premium",
+        "IV Rank & Percentile",
+        "Expected Daily Move",
+        "Payoff Builder",
+    ]
+    module = st.selectbox("Select Module", MODULES)
+
+    if module == "Hurst Exponent":
+        fig = chart_hurst(close_px)
+        if fig:
+            st.pyplot(fig)
+            add_chart_download(fig, "hurst.png")
+        else:
+            st.warning("Insufficient data (need ≥ 120 bars).")
+        info_box("<b>How to read:</b> H > 0.55 = trending. H < 0.45 = mean-reverting. H ≈ 0.50 = random walk.")
+
+    elif module == "RSI (Wilder)":
+        fig = chart_rsi(close_px)
+        st.pyplot(fig)
+        add_chart_download(fig, "rsi.png")
+        cur_rsi = float(calculate_rsi(close_px).dropna().iloc[-1])
+        if cur_rsi > 70: st.warning(f"RSI {cur_rsi:.1f} — Overbought")
+        elif cur_rsi < 30: st.success(f"RSI {cur_rsi:.1f} — Oversold")
+        else: st.info(f"RSI {cur_rsi:.1f} — Neutral")
+
+    elif module == "Volatility Cone":
+        fig = chart_volatility_cone(close_px, trading_days)
+        if fig:
+            st.pyplot(fig)
+            add_chart_download(fig, "vol_cone.png")
+        info_box("Current vol vs historical range for different windows.")
+
+    elif module == "Volatility Risk Premium":
+        iv_for_vrp = None
+        if market == "Indian Market":
+            iv_for_vrp = fetch_india_vix("6mo")
+            if iv_for_vrp is not None:
+                iv_for_vrp = iv_for_vrp.squeeze()
+        fig = chart_vrp(close_px, iv_for_vrp, trading_days)
+        if fig:
+            st.pyplot(fig)
+            add_chart_download(fig, "vrp.png")
+        else:
+            st.info("VRP chart requires India VIX data (Indian Market mode).")
+
+    elif module == "IV Rank & Percentile":
+        iv_series_ivr = None
+        label_ivr = "Historical Vol (20d)"
+        if market == "Indian Market":
+            iv_series_ivr = fetch_india_vix("1y")
+            label_ivr = "India VIX"
+        fig = chart_ivr(close_px, iv_series_ivr, label_ivr)
+        if fig:
+            st.pyplot(fig)
+            add_chart_download(fig, "ivr.png")
+        info_box("IVR >65 → sell premium; IVR <30 → buy premium.")
+
+    elif module == "Expected Daily Move":
+        iv_em = garch_vol
+        if market == "Indian Market":
+            vix_em = fetch_india_vix("5d")
+            if vix_em is not None:
+                iv_em = float(vix_em.iloc[-1])
+        recent = close_px.tail(15)
+        fig = chart_expected_move(asset_spot, iv_em, recent, currency, trading_days)
+        st.pyplot(fig)
+        add_chart_download(fig, "expected_move.png")
+
+    elif module == "Payoff Builder":
+        st.markdown("#### Build a multi-leg strategy and visualise payoff at expiry")
+        n_legs = st.number_input("Number of legs", 1, 4, 1)
+        legs = []
+        step = max(1.0, round(asset_spot * 0.01, 0))
+        for i in range(n_legs):
+            c1, c2, c3, c4 = st.columns(4)
+            ltype = c1.selectbox(f"Leg {i+1}", ["Long Call", "Short Call", "Long Put", "Short Put"], key=f"lt{i}")
+            strike = c2.number_input(f"Strike {i+1}", value=float(asset_spot), step=step, key=f"sk{i}")
+            premium = c3.number_input(f"Premium {i+1}", value=10.0, step=0.5, key=f"pm{i}")
+            sign = 1 if "Long" in ltype else -1
+            legs.append({"label": ltype, "K": strike, "premium": premium, "sign": sign})
+        if st.button("Plot Payoff"):
+            fig = chart_payoff(legs, asset_spot)
+            st.pyplot(fig)
+            add_chart_download(fig, "payoff.png")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LIVE MODE
@@ -989,4 +1245,4 @@ if st.session_state["live_mode"]:
     st.rerun()
 
 st.markdown("---")
-st.caption("AlphaQuant Terminal Pro · Enhanced version · Educational use only")
+st.caption("AlphaQuant Terminal · Educational use only")
