@@ -10,7 +10,7 @@ from arch import arch_model
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
-import yaml, logging, os, time, requests
+import yaml, logging, os, time, requests, re
 
 # Optional Telegram
 try:
@@ -459,27 +459,27 @@ def get_intraday_signal(asset_choice, ticker, park_vol=None, ivr=None, ivp=None,
     if deribit_iv: reasoning_parts.append(f"Deribit IV={deribit_iv:.1f}%")
     if funding_rate: reasoning_parts.append(f"Funding={funding_rate:.3f}%")
     reasoning_parts.append(f"Vol:{vol_env} Sweep:{'Up' if sweeps['up'] else 'Down' if sweeps['down'] else 'None'} Confl:{confluence}/3")
-    reasoning_parts.append(f"Daily+-{currency}{daily_move:,.0f}")
+    reasoning_parts.append(f"Daily±{currency}{daily_move:,.0f}")
     reasoning_parts.append(f"Conf={confidence}% Risk={risk_level}")
     if ml_pred is not None: reasoning_parts.append(f"ML={'Bull' if ml_pred==1 else 'Bear'}")
     return {
         "regime":regime,"vol_environment":vol_env,"sweep_signal":sweep_signal,
         "suggested_strategy":strategy,"direction":direction,"confidence":confidence,
-        "risk_level":risk_level,"reasoning":" . ".join(reasoning_parts),
+        "risk_level":risk_level,"reasoning":" · ".join(reasoning_parts),
         "daily_move":daily_move,"garch_vol":garch_vol,"park_vol":park_vol,
         "ivr":ivr,"ivp":ivp,"deribit_iv":deribit_iv,"confluence":confluence,
         "funding_rate":funding_rate,"ml_pred":ml_pred
     }
 
 def generate_trading_tips(signal):
-    tips=["🛑 Risk 1-2% per trade.","📊 Size inversely to volatility.","⏳ Close short options before final hour."]
+    tips=["🛑 Risk 1‑2% per trade.","📊 Size inversely to volatility.","⏳ Close short options before final hour."]
     strat=signal.get('suggested_strategy',''); daily_move=signal.get('daily_move',0); spot=asset_spot
-    if "Iron Condor" in strat: tips.append(f"🕊️ Short strikes near +-{currency}{daily_move:,.0f}.")
+    if "Iron Condor" in strat: tips.append(f"🕊️ Short strikes near ±{currency}{daily_move:,.0f}.")
     elif "Spread" in strat:
         if "Bull" in strat: tips.append(f"📈 Long {spot:,.0f} call, short {spot+daily_move:,.0f} call.")
         elif "Bear" in strat: tips.append(f"📉 Long {spot:,.0f} put, short {spot-daily_move:,.0f} put.")
     if signal.get('ml_pred') is not None: tips.append(f"🤖 ML predicts {'up' if signal['ml_pred']==1 else 'down'} next period.")
-    if signal.get('funding_rate') and abs(signal['funding_rate'])>0.1: tips.append(f"📡 Funding rate extreme ({signal['funding_rate']:.3f}%) - possible reversal.")
+    if signal.get('funding_rate') and abs(signal['funding_rate'])>0.1: tips.append(f"📡 Funding rate extreme ({signal['funding_rate']:.3f}%) – possible reversal.")
     return tips
 
 # -----------------------------------------------------------------------------
@@ -494,23 +494,23 @@ def get_trade_bias(garch_vol, ivr, corr):
         else:
             bias = "Directional with defined risk. Favor long calls/puts over short premium."
     elif 25 <= ivr <= 50:
-        bias = "Mixed - credit spreads in range, debit if trending. Keep size small."
+        bias = "Mixed – credit spreads in range, debit if trending. Keep size small."
     else:
         if garch_vol > 80:
             bias = "Short premium favoured (iron condors, strangles). Strict risk caps."
         else:
             bias = "Sell OTM premium, but hedge tail risk."
     if corr and corr > 0.8:
-        bias += " High correlation - trend following valid, but watch for systematic risk."
+        bias += " High correlation – trend following valid, but watch for systematic risk."
     elif corr and corr < 0.5:
-        bias += " Decoupling - use pairs or neutral strategies."
+        bias += " Decoupling – use pairs or neutral strategies."
     return bias
 
 def get_playbook(garch_vol, ivr, corr):
     if ivr is None: ivr = 25
     if ivr < 25:
         if garch_vol < 40:
-            return ["Bull/Bear vertical spreads", "Calendars", "Long calls/puts (1 month)"]
+            return ["Bull/Bear vertical spreads", "Calendars", "Long calls/puts (≤1 month)"]
         else:
             return ["Long strangles (defined risk)", "Backspreads", "Avoid naked shorts"]
     elif ivr > 50:
@@ -520,12 +520,12 @@ def get_playbook(garch_vol, ivr, corr):
 
 def get_ivr_label(ivr):
     if ivr is None: return "IVR unavailable"
-    if ivr < 25: return f"Low IV (IVR {ivr:.0f}%) - Buy premium, defined-risk spreads"
-    elif ivr > 50: return f"High IV (IVR {ivr:.0f}%) - Sell premium, small size"
-    else: return f"Mid IV (IVR {ivr:.0f}%) - Mixed, favour defined risk"
+    if ivr < 25: return f"Low IV (IVR {ivr:.0f}%) – Buy premium, defined‑risk spreads"
+    elif ivr > 50: return f"High IV (IVR {ivr:.0f}%) – Sell premium, small size"
+    else: return f"Mid IV (IVR {ivr:.0f}%) – Mixed, favour defined risk"
 
 # -----------------------------------------------------------------------------
-# ANALYTICS PLOT FUNCTIONS
+# ANALYTICS PLOT FUNCTIONS (unchanged, but complete)
 # -----------------------------------------------------------------------------
 def plot_correlation():
     if 'correlation_data' not in st.session_state: return None
@@ -590,9 +590,9 @@ def plot_expected_move():
     ax.set_title("Expected Move (Daily, Weekly, Monthly)", fontweight='bold')
     ax.set_xticks([]); ax.legend(loc='upper left', facecolor='black', edgecolor='gray')
     text_str = (f"{vix_label}\n{spot_label}\n"
-                f"Daily: +-{move_daily:,.0f}  [{asset_spot-move_daily:,.0f}-{asset_spot+move_daily:,.0f}]\n"
-                f"Weekly: +-{move_weekly:,.0f}  [{asset_spot-move_weekly:,.0f}-{asset_spot+move_weekly:,.0f}]\n"
-                f"Monthly: +-{move_monthly:,.0f}  [{asset_spot-move_monthly:,.0f}-{asset_spot+move_monthly:,.0f}]")
+                f"Daily: ±{move_daily:,.0f}  [{asset_spot-move_daily:,.0f}–{asset_spot+move_daily:,.0f}]\n"
+                f"Weekly: ±{move_weekly:,.0f}  [{asset_spot-move_weekly:,.0f}–{asset_spot+move_weekly:,.0f}]\n"
+                f"Monthly: ±{move_monthly:,.0f}  [{asset_spot-move_monthly:,.0f}–{asset_spot+move_monthly:,.0f}]")
     props = dict(boxstyle='round', facecolor='black', edgecolor='white')
     ax.text(0.02,0.98, text_str, transform=ax.transAxes, fontsize=11, verticalalignment='top', bbox=props, color='white', fontweight='bold')
     plt.tight_layout()
@@ -824,13 +824,13 @@ def compute_quick_stats(ticker, asset_choice, asset_spot, garch_vol_asset, park_
         iv = (opt_df.iloc[(opt_df['strike']-asset_spot).abs().argsort()[:1]]['mark_iv'].values[0]*100
               if opt_df is not None and not opt_df.empty else garch_vol_asset)
         daily_move = asset_spot * (iv/100) * np.sqrt(1/365)
-        quick_stats['Exp. Move (D)'] = {'value': f"+-{currency}{daily_move:,.0f}", 'status': '1σ Range', 'module': 'Expected Move'}
+        quick_stats['Exp. Move (D)'] = {'value': f"±{currency}{daily_move:,.0f}", 'status': '1σ Range', 'module': 'Expected Move'}
     else:
         vix_data = get_india_vix("5d")
         if vix_data is not None:
             iv = float(vix_data.iloc[-1])
             daily_move = asset_spot * (iv/100) * np.sqrt(1/365)
-            quick_stats['Exp. Move (D)'] = {'value': f"+-{currency}{daily_move:,.0f}", 'status': '1σ Range', 'module': 'Expected Move'}
+            quick_stats['Exp. Move (D)'] = {'value': f"±{currency}{daily_move:,.0f}", 'status': '1σ Range', 'module': 'Expected Move'}
     close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
     log_p = np.log(close); hurst_series = log_p.rolling(60).apply(calculate_hurst_exponent)
     df = pd.DataFrame({'Close':close,'Hurst':hurst_series}).dropna()
@@ -940,7 +940,7 @@ with st.sidebar:
             hist_b = st.session_state.get('long_hist_data', {}).get(asset_choice)
             if hist_b is not None:
                 close = hist_b['Close'].squeeze(); train_ml_model(close); st.success("ML model trained!")
-    auto_exit = st.checkbox("🛑 Auto-Exit (1.5x loss or 2σ move)", value=st.session_state['auto_exit_enabled'])
+    auto_exit = st.checkbox("🛑 Auto‑Exit (1.5x loss or 2σ move)", value=st.session_state['auto_exit_enabled'])
     if auto_exit != st.session_state['auto_exit_enabled']: st.session_state['auto_exit_enabled'] = auto_exit
 
     with st.expander("📡 Telegram Alerts"):
@@ -1056,7 +1056,7 @@ if active_tab == "📊 Dashboard & Analytics":
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Spot Price", f"{currency}{asset_spot:,.2f}", f"{asset_change:+,.2f} ({asset_pct:+.2f}%)")
             col2.metric("GARCH Vol", f"{garch_vol:.1f}%")
-            col3.metric("GJR-GARCH Vol", f"{gjrgarch_vol:.1f}%")
+            col3.metric("GJR‑GARCH Vol", f"{gjrgarch_vol:.1f}%")
             col4.metric("Parkinson Vol", f"{park_vol:.1f}%" if park_vol else "N/A")
             st.caption(f"{asset_choice} | {ticker} | Last update: {lp['ts']}")
             intraday_move = None
@@ -1073,20 +1073,28 @@ if active_tab == "📊 Dashboard & Analytics":
             with st.expander("🎯 Allowed Strategies (Playbook)"):
                 for s in playbook_strategies:
                     st.write(f"- {s}")
+            # SAFE STRIKE ZONES (FIXED)
             if 'Exp. Move (D)' in quick_stats:
                 val = quick_stats['Exp. Move (D)']['value']
-                daily_move_val = float(val.replace(currency,'').replace('±','').replace(',',''))
-                st.write(f"📏 **Strike zones** (based on daily move ±{quick_stats['Exp. Move (D)']['value']}):")
-                st.write(f"- Directional OTM strikes: {asset_spot-daily_move_val:,.0f} - {asset_spot+daily_move_val:,.0f}")
-                st.write(f"- Short gamma (sell OTM): {asset_spot-daily_move_val*1.5:,.0f} / {asset_spot+daily_move_val*1.5:,.0f}")
+                numeric_part = re.sub(r'[^\d\.\-]', '', val)
+                try:
+                    daily_move_val = float(numeric_part) if numeric_part else 0.0
+                except ValueError:
+                    daily_move_val = 0.0
+                if daily_move_val > 0:
+                    st.write(f"📏 **Strike zones** (based on daily move ±{quick_stats['Exp. Move (D)']['value']}):")
+                    st.write(f"- Directional OTM strikes: {asset_spot-daily_move_val:,.0f} – {asset_spot+daily_move_val:,.0f}")
+                    st.write(f"- Short gamma (sell OTM): {asset_spot-daily_move_val*1.5:,.0f} / {asset_spot+daily_move_val*1.5:,.0f}")
+                else:
+                    st.write("📏 Strike zones unavailable – expected move could not be calculated.")
             if max_pain:
                 distance_pct = abs(asset_spot - max_pain) / asset_spot * 100
                 if distance_pct < 1:
-                    st.success("Max Pain close - expect mean reversion; favour ATM/ITM structures.")
+                    st.success("Max Pain close – expect mean reversion; favour ATM/ITM structures.")
                 elif asset_spot < max_pain:
-                    st.info("Spot below Max Pain - mild bullish bias, watch for gamma resistance.")
+                    st.info("Spot below Max Pain – mild bullish bias, watch for gamma resistance.")
                 else:
-                    st.info("Spot above Max Pain - mild bearish bias, support at Max Pain.")
+                    st.info("Spot above Max Pain – mild bearish bias, support at Max Pain.")
             if selected_market == "Indian Market":
                 if 'Nifty' in asset_choice or 'Bank Nifty' in asset_choice:
                     lot_size = 25 if 'Nifty' in asset_choice else 15
@@ -1094,7 +1102,7 @@ if active_tab == "📊 Dashboard & Analytics":
                     today = datetime.now()
                     days_to_expiry = 4 - today.weekday()
                     if days_to_expiry <= 2:
-                        st.warning(f"⏳ Expiry in {days_to_expiry} days - avoid fresh naked shorts, favor defined-risk spreads.")
+                        st.warning(f"⏳ Expiry in {days_to_expiry} days – avoid fresh naked shorts, favor defined‑risk spreads.")
             max_risk_pct = 0.5 if park_vol and park_vol > 50 else 1.0
             max_risk_amount = st.session_state.paper_balance * max_risk_pct / 100
             st.write(f"💼 **Max risk per trade:** {currency}{max_risk_amount:,.0f} ({max_risk_pct}% of capital)")
@@ -1163,17 +1171,99 @@ if active_tab == "📊 Dashboard & Analytics":
     # ... (keep all the existing sections from earlier version)
 
 elif active_tab == "📄 Paper Trading":
-    # Keep existing Paper Trading code
-    pass
+    st.title("📄 Paper Trading")
+    st.markdown(f"Simulate trades with a **{currency}100,000** virtual account.")
+    col_bal, col_pnl = st.columns(2)
+    with col_bal: st.metric("Cash Balance", f"{currency}{st.session_state['paper_balance']:,.2f}")
+    unrealized_pnl = 0
+    for pos in st.session_state['paper_positions']:
+        if pos['Type'] == 'Spot':
+            unrealized_pnl += (asset_spot - pos['Entry']) * pos['Qty'] if pos['Direction'] == 'Long' else (pos['Entry'] - asset_spot) * pos['Qty']
+    total_equity = st.session_state['paper_balance'] + unrealized_pnl
+    col_pnl.metric("Total Equity", f"{currency}{total_equity:,.2f}", delta=f"Unrealized: {currency}{unrealized_pnl:,.2f}")
+    with st.expander("⚡ Quick Trade (Manual)"):
+        with st.form("paper_trade_form"):
+            c1, c2 = st.columns(2)
+            asset = c1.selectbox("Asset", list(TICKER_DICT.keys()), key="paper_asset")
+            direction = c2.selectbox("Direction", ["Long", "Short"])
+            qty = st.number_input("Quantity", min_value=0.01, value=0.01, step=0.01)
+            price = st.number_input("Price", value=asset_spot)
+            if st.form_submit_button("Execute Trade"):
+                cost = qty * price
+                if cost > st.session_state['paper_balance']:
+                    st.error("Insufficient balance!")
+                else:
+                    st.session_state['paper_balance'] -= cost
+                    st.session_state['paper_positions'].append({
+                        'Asset': asset, 'Direction': direction, 'Qty': qty,
+                        'Entry': price, 'Type': 'Spot',
+                        'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    })
+                    st.session_state['paper_trade_history'].append({
+                        'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'Asset': asset, 'Direction': direction, 'Qty': qty,
+                        'Price': price, 'Cost': cost, 'Action': 'Open'
+                    })
+                    st.success(f"Bought {qty} {asset} @ {currency}{price:,.2f}")
+    if st.session_state['paper_positions']:
+        st.subheader("📋 Open Positions")
+        pos_df = pd.DataFrame(st.session_state['paper_positions']); pos_df.index = range(1, len(pos_df)+1)
+        st.dataframe(pos_df)
+        close_idx = st.selectbox("Select position to close", pos_df.index)
+        close_price = st.number_input("Close Price", value=asset_spot)
+        if st.button("Close Position"):
+            pos = pos_df.loc[close_idx]
+            pnl = (close_price - pos['Entry']) * pos['Qty'] if pos['Direction']=='Long' else (pos['Entry'] - close_price) * pos['Qty']
+            st.session_state['paper_balance'] += (pos['Entry'] * pos['Qty'] + pnl)
+            st.session_state['paper_trade_history'].append({
+                'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'Asset': pos['Asset'], 'Direction': pos['Direction'], 'Qty': pos['Qty'],
+                'Price': close_price, 'PnL': pnl, 'Action': 'Close'
+            })
+            st.session_state['paper_positions'].pop(close_idx-1)
+            st.success(f"Closed position with P&L: {currency}{pnl:,.2f}"); st.rerun()
+    if st.session_state['paper_trade_history']:
+        st.subheader("📜 Trade History")
+        hist_df = pd.DataFrame(st.session_state['paper_trade_history']); st.dataframe(hist_df)
+        if 'PnL' in hist_df.columns:
+            total_realized = hist_df['PnL'].sum(); win_trades = hist_df[hist_df['PnL'] > 0]
+            st.metric("Total Realized P&L", f"{currency}{total_realized:,.2f}")
+            if len(hist_df[~hist_df['PnL'].isna()]) > 0:
+                st.metric("Win Rate", f"{len(win_trades) / len(hist_df[~hist_df['PnL'].isna()]) * 100:.1f}%")
+    else: st.info("No trades executed yet.")
+    if st.button("Reset Paper Account"):
+        st.session_state['paper_balance'] = 100000; st.session_state['paper_positions'] = []; st.session_state['paper_trade_history'] = []; st.rerun()
 
 elif active_tab == "🧙 Strategy Wizard":
-    # Keep existing Strategy Wizard code, but after execution add:
-    # send_telegram_alert(f"Wizard opened {direction} {qty:.4f} {asset_choice} @ {currency}{asset_spot:,.2f}")
-    pass
+    st.title("🧙 Strategy Wizard")
+    signal_w = get_intraday_signal(asset_choice, ticker)
+    if signal_w is not None and 'error' not in signal_w:
+        st.write(f"**Market Regime:** {signal_w['regime']}")
+        st.write(f"**Vol Environment:** {signal_w['vol_environment']}")
+        st.write(f"**Suggested Strategy:** {signal_w['suggested_strategy']}")
+        st.write(f"**Confidence:** {signal_w['confidence']}%")
+        dte_w = st.slider("Select DTE", 0, 7, 4)
+        risk_perc = st.slider("Risk % per trade", 0.5, 5.0, 1.0, 0.5)
+        if st.button("Execute via Paper Trading"):
+            qty = (st.session_state['paper_balance'] * risk_perc / 100) / asset_spot
+            direction = "Long" if "Bull" in signal_w['suggested_strategy'] or "Long" in signal_w['direction'] else "Short"
+            cost = qty * asset_spot
+            if cost <= st.session_state['paper_balance']:
+                st.session_state['paper_balance'] -= cost
+                st.session_state['paper_positions'].append({
+                    'Asset': asset_choice, 'Direction': direction, 'Qty': qty,
+                    'Entry': asset_spot, 'Type': 'Spot',
+                    'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                })
+                st.success(f"Opened {direction} {qty:.4f} {asset_choice} @ {currency}{asset_spot:,.2f}")
+                send_telegram_alert(f"Wizard opened {direction} {qty:.4f} {asset_choice} @ {currency}{asset_spot:,.2f}")
+            else:
+                st.error("Insufficient balance.")
+    else:
+        st.warning("Signal unavailable for strategy wizard.")
 
 elif active_tab == "📓 Journal":
     st.title("📓 Trading Journal & Analytics")
-    # Snapshot logging (unchanged)
     if st.button("📸 Log Current Snapshot"):
         snapshot = {
             'timestamp': datetime.now().isoformat(),
