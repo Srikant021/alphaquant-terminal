@@ -90,7 +90,7 @@ plt.style.use('dark_background')
 logging.basicConfig(level=logging.INFO); logger=logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
-# ALL HELPER FUNCTIONS (exactly as provided in the previous message, unchanged)
+# ALL HELPER FUNCTIONS
 # -----------------------------------------------------------------------------
 def yf_download_retry(*args, max_retries=3, **kwargs):
     for attempt in range(max_retries):
@@ -117,11 +117,11 @@ def calculate_hurst_exponent(ts):
     except: return np.nan
 
 def get_asset_step(spot_price):
-    if spot_price>50000: return 2000.0
-    elif spot_price>10000: return 500.0
-    elif spot_price>1000: return 50.0
-    elif spot_price>100: return 10.0
-    else: return 1.0
+    if spot_price>50000: return 2000
+    elif spot_price>10000: return 500
+    elif spot_price>1000: return 50
+    elif spot_price>100: return 10
+    else: return 1
 
 def calculate_parkinson_volatility(high_px,low_px,periods_per_year=252):
     if len(high_px)!=len(low_px) or len(high_px)<2: return 0.0
@@ -497,9 +497,254 @@ def get_ivr_label(ivr):
 # -----------------------------------------------------------------------------
 # ANALYTICS PLOT FUNCTIONS
 # -----------------------------------------------------------------------------
-# (All plot_... functions unchanged – omitted for brevity; they are identical
-#  to the complete versions in the previous answer. Copy them in full.)
-# I'll include the critical one that caused the error: plot_payoff and related.
+def plot_correlation():
+    if 'correlation_data' not in st.session_state: return None
+    data = st.session_state['correlation_data'].dropna()
+    if data.empty: return None
+    n1, n2 = ("Bitcoin","Ethereum") if selected_market=="Crypto" else ("Nifty 50","Bank Nifty")
+    data.columns = [n1, n2]
+    normalized = (data / data.iloc[0]) * 100
+    log_ret = np.log(data / data.shift(1)).dropna()
+    rolling_corr = log_ret[n1].rolling(20).corr(log_ret[n2])
+    current_corr = rolling_corr.iloc[-1]
+    if current_corr > 0.8: regime, color = "High Correlation", 'green'
+    elif current_corr < 0.5: regime, color = "Severe Divergence", 'red'
+    else: regime, color = "Moderate Divergence", 'orange'
+    fig, (ax1, ax2) = plt.subplots(2,1,figsize=(12,7), gridspec_kw={'height_ratios':[2,1]})
+    ax1.plot(normalized.index, normalized[n1], label=n1)
+    ax1.plot(normalized.index, normalized[n2], label=n2)
+    ax1.fill_between(normalized.index, normalized[n1], normalized[n2], alpha=0.2)
+    ax1.set_title(f"Correlation: {n1} vs {n2}", fontweight='bold'); ax1.legend()
+    ax2.plot(rolling_corr.index, rolling_corr, color='white')
+    ax2.axhline(0.8, color='green', linestyle='--'); ax2.axhline(0.5, color='red', linestyle='--'); ax2.set_ylim(-0.2,1.1)
+    props = dict(boxstyle='round', facecolor='black', edgecolor=color)
+    ax1.text(0.02,0.05,f"20-Day Corr: {current_corr:.2f}\nRegime: {regime}", transform=ax1.transAxes, bbox=props, fontsize=12)
+    plt.tight_layout()
+    return fig
+
+def plot_expected_move():
+    if selected_market == "Crypto":
+        opt_df = fetch_deribit_option_chain("BTC" if 'BTC' in ticker else "ETH")
+        if opt_df is not None and not opt_df.empty:
+            atm_idx = (opt_df['strike'] - asset_spot).abs().argsort()[:1]
+            if len(atm_idx) > 0: iv = opt_df.iloc[atm_idx]['mark_iv'].values[0] * 100
+            else: iv = garch_vol_asset
+        else: iv = garch_vol_asset
+        spot_label = f"Spot: {currency}{asset_spot:,.0f}"; iv_label = f"ATM IV: {iv:.1f}%"
+        recent = get_recent_month(ticker)
+    else:
+        vix_data = get_india_vix("5d")
+        if vix_data is None: return None
+        iv = float(vix_data.iloc[-1])
+        spot_label = f"Nifty: {asset_spot:,.0f}"; iv_label = f"India VIX: {iv:.2f}"
+        nifty_data = yf_download_retry("^NSEI", period="1mo")
+        if nifty_data.empty: return None
+        recent = nifty_data['Close'].squeeze().tail(15)
+    if recent.empty: return None
+    daily_volatility = (iv / 100) * np.sqrt(1/365)
+    expected_move_points = asset_spot * daily_volatility
+    upper_bound = asset_spot + expected_move_points; lower_bound = asset_spot - expected_move_points
+    fig, ax = plt.subplots(figsize=(12,7), dpi=120)
+    x_dates = np.arange(len(recent))
+    ax.plot(x_dates, recent.values, color='#00FFFF', linewidth=2, marker='o', label='Price')
+    tomorrow_x = len(recent)
+    ax.hlines(asset_spot, xmin=x_dates[-1], xmax=tomorrow_x, color='white', linestyle='-', linewidth=2)
+    ax.scatter(tomorrow_x, asset_spot, color='white', s=70, zorder=5)
+    ax.scatter(tomorrow_x, upper_bound, color='#00FF00', s=120, marker='^', zorder=5)
+    ax.scatter(tomorrow_x, lower_bound, color='#FF3333', s=120, marker='v', zorder=5)
+    ax.hlines(upper_bound, xmin=x_dates[-1], xmax=tomorrow_x, color='#00FF00', linestyle='--', linewidth=1.5, label='Upper Bound (+1 SD)')
+    ax.hlines(lower_bound, xmin=x_dates[-1], xmax=tomorrow_x, color='#FF3333', linestyle='--', linewidth=1.5, label='Lower Bound (-1 SD)')
+    ax.fill_between([x_dates[-1], tomorrow_x], [asset_spot, lower_bound], [asset_spot, upper_bound], color='gray', alpha=0.2)
+    ax.set_title('Implied Daily Expected Move', fontsize=18, color='white', pad=20, fontweight='bold')
+    ax.set_ylabel('Price', color='gray', fontsize=12); ax.grid(True, color='#2A2A2A', linestyle=':')
+    ax.set_xticks([]); ax.legend(loc='upper left', facecolor='black', edgecolor='gray', fontsize=10)
+    props = dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.8, edgecolor='white', linewidth=1.5)
+    text_str = (f"⚡ {iv_label}\n🎯 {spot_label}\n📏 Expected Move: ± {expected_move_points:,.1f} points\n"
+                f"---------------------------\n🟢 Safe Short Call Strike: > {upper_bound:,.0f}\n🔴 Safe Short Put Strike: < {lower_bound:,.0f}")
+    ax.text(0.02, 0.45, text_str, transform=ax.transAxes, fontsize=12,
+            verticalalignment='center', bbox=props, color='white', fontweight='bold')
+    plt.tight_layout()
+    return fig
+
+def plot_hurst():
+    close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
+    if len(close) < 120: return None
+    log_prices = np.log(close)
+    def rolling_hurst(series, window=60):
+        return series.rolling(window).apply(lambda x: calculate_hurst_exponent(x) if len(x)>=20 else np.nan, raw=False)
+    hurst_series = rolling_hurst(log_prices, 60)
+    df = pd.DataFrame({'Close': close, 'Hurst': hurst_series}).dropna()
+    if df.empty: return None
+    current_price = float(df['Close'].iloc[-1])
+    current_hurst = float(df['Hurst'].iloc[-1])
+    if np.isnan(current_hurst): return None
+    if current_hurst < 0.45: regime, color_theme = "MEAN REVERTING", '#FF3333'
+    elif current_hurst > 0.55: regime, color_theme = "TRENDING", '#00FF00'
+    else: regime, color_theme = "RANDOM WALK", '#FFA500'
+    stat_property = "Range-Bound / Vol Compression" if regime=="MEAN REVERTING" else "Momentum Expansion" if regime=="TRENDING" else "Noise / Transition"
+    fig, (ax1, ax2) = plt.subplots(2,1,figsize=(12,8), dpi=120, gridspec_kw={'height_ratios':[1.5,1]})
+    ax1.plot(df.index, df['Close'], color='white', linewidth=1.5, label='Price')
+    ax1.set_title('Market Regime (Hurst Exponent)', fontsize=18, color='white', pad=15, fontweight='bold')
+    ax1.set_ylabel('Price', color='gray'); ax1.grid(True, color='#2A2A2A', linestyle=':')
+    ax1.legend(loc='upper left', facecolor='black', edgecolor='gray')
+    ax1.axvspan(df.index[-15], df.index[-1], color=color_theme, alpha=0.1)
+    ax2.plot(df.index, df['Hurst'], color='#00FFFF', linewidth=2, label='60-Day Hurst Exponent')
+    ax2.axhline(0.55, color='#00FF00', linestyle='--', linewidth=1.5, label='Trending (>0.55)')
+    ax2.axhline(0.45, color='#FF3333', linestyle='--', linewidth=1.5, label='Mean Reverting (<0.45)')
+    ax2.axhline(0.50, color='gray', linestyle='-', linewidth=1, alpha=0.5)
+    ax2.fill_between(df.index, 0.55, df['Hurst'], where=(df['Hurst']>0.55), color='#00FF00', alpha=0.2, interpolate=True)
+    ax2.fill_between(df.index, 0.45, df['Hurst'], where=(df['Hurst']<0.45), color='#FF3333', alpha=0.2, interpolate=True)
+    ax2.set_ylabel('Hurst Value (H)', color='gray'); ax2.grid(True, color='#2A2A2A', linestyle=':')
+    ax2.set_ylim(0.3,0.7); ax2.legend(loc='upper right', facecolor='black', edgecolor='gray')
+    props = dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.9, edgecolor=color_theme, linewidth=1.5)
+    text_str = f"Price: {current_price:.2f}\nHurst (H): {current_hurst:.3f}\nRegime: {regime}\n{stat_property}"
+    ax1.text(0.02,0.05,text_str, transform=ax1.transAxes, fontsize=12,
+            verticalalignment='bottom', bbox=props, color='white', fontweight='bold')
+    plt.tight_layout()
+    return fig
+
+def plot_ivr_ivp():
+    if selected_market=="Crypto":
+        close=st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
+        vol_series=np.log(close/close.shift(1)).dropna().rolling(20).std()*np.sqrt(365)*100
+        current_vol=vol_series.iloc[-1]; high,low=vol_series.max(),vol_series.min()
+        ivr=(current_vol-low)/(high-low)*100 if high!=low else 50
+        ivp=(vol_series<current_vol).sum()/len(vol_series)*100; label="Historical Vol (20d)"
+    else:
+        vix=get_india_vix("1y")
+        if vix is None: return None
+        current_vol=vix.iloc[-1]; high,low=vix.max(),vix.min()
+        ivr=(current_vol-low)/(high-low)*100 if high!=low else 50
+        ivp=(vix<current_vol).sum()/len(vix)*100; label="India VIX"; vol_series=vix
+    regime="High Vol Regime (Sell Premium)" if ivr>50 else "Low Vol Regime (Buy Premium)"
+    fig,ax=plt.subplots(figsize=(12,6))
+    ax.plot(vol_series.index,vol_series,color='cyan',label=label)
+    ax.axhline(high,color='red',linestyle='--'); ax.axhline(low,color='green',linestyle='--')
+    ax.axhline(current_vol,color='white',linestyle='-')
+    ax.set_title("IV Rank & IV Percentile",fontweight='bold')
+    props=dict(boxstyle='round',facecolor='black',edgecolor='cyan')
+    ax.text(0.02,0.95,f"IVR: {ivr:.1f}%\nIVP: {ivp:.1f}%\n{regime}",transform=ax.transAxes,bbox=props,va='top',fontsize=12)
+    plt.tight_layout(); return fig
+
+def plot_liquidity_sweep():
+    df=fetch_intraday(ticker,"30m")
+    if df is None: return None
+    df=df.tail(60).copy()
+    df['Prev_High']=df['High'].rolling(20).max().shift(1)
+    df['Prev_Low']=df['Low'].rolling(20).min().shift(1)
+    df['Supply_Sweep']=(df['High']>df['Prev_High'])&(df['Close']<df['Prev_High'])
+    df['Demand_Sweep']=(df['Low']<df['Prev_Low'])&(df['Close']>df['Prev_Low'])
+    current_regime="Price Discovery"
+    if df['Supply_Sweep'].iloc[-1]: current_regime="Supply Swept (Bearish)"
+    elif df['Demand_Sweep'].iloc[-1]: current_regime="Demand Swept (Bullish)"
+    fig,ax=plt.subplots(figsize=(12,7)); ax.plot(df.index,df['Close'],color='white',label='Price')
+    for idx,row in df.iterrows():
+        if row['Supply_Sweep']: ax.scatter(idx,row['High']+10,marker='v',color='red',s=100)
+        if row['Demand_Sweep']: ax.scatter(idx,row['Low']-10,marker='^',color='green',s=100)
+    ax.set_title("Liquidity Sweep / Order Block Detector",fontweight='bold')
+    props=dict(boxstyle='round',facecolor='black')
+    ax.text(0.02,0.05,f"Microstructure: {current_regime}",transform=ax.transAxes,bbox=props,fontsize=12)
+    plt.tight_layout(); return fig
+
+def plot_oi_profile():
+    step=get_asset_step(asset_spot); base=round(asset_spot/step)*step
+    strikes=np.arange(base-8*step,base+9*step,step)
+    np.random.seed(int(asset_spot)%1234)
+    calls=np.random.randint(10,80,len(strikes)).astype(float)*50000
+    puts=np.random.randint(10,80,len(strikes)).astype(float)*50000
+    pain={k:np.sum(np.maximum(0,k-strikes)*calls+np.maximum(0,strikes-k)*puts) for k in strikes}
+    max_pain=min(pain,key=pain.get)
+    fig,ax=plt.subplots(figsize=(14,8))
+    ax.barh(strikes,calls/1e5,color='red',alpha=0.8,label='Call OI')
+    ax.barh(strikes,-puts/1e5,color='green',alpha=0.8,label='Put OI')
+    ax.axhline(asset_spot,color='cyan',linewidth=2,label=f'Spot: {asset_spot:,.0f}')
+    ax.axhline(max_pain,color='white',linestyle='--',label=f'Max Pain: {max_pain}')
+    ax.set_title("Open Interest Profile & Max Pain (Simulated)", fontweight='bold'); ax.legend(); ax.invert_yaxis()
+    plt.tight_layout(); return fig
+
+def plot_parkinson():
+    df = st.session_state['long_hist_data'][asset_choice]
+    if df.empty or not all(c in df.columns for c in ['High','Low']): return None,None
+    high=df['High'].squeeze().tail(60); low=df['Low'].squeeze().tail(60)
+    if len(high)<2 or len(low)<2: return None,None
+    park=calculate_parkinson_volatility(high,low,periods_per_year=trading_days)
+    fig,ax=plt.subplots(figsize=(10,4)); ax.bar(['Parkinson Vol'],[park],color='orange')
+    ax.set_ylabel('Annualized Vol (%)'); ax.set_title("Parkinson Estimator (High-Low Range)",fontweight='bold')
+    for i,v in enumerate([park]): ax.text(i,v+0.5,f"{v:.1f}%",ha='center',fontweight='bold')
+    plt.tight_layout(); return fig,park
+
+def plot_volatility_cone():
+    close=st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
+    log_ret=np.log(close/close.shift(1)).dropna()
+    windows=[10,20,30,60,90,120,180,252]
+    max_v,min_v,med_v,cur_v=[],[],[],[]
+    for w in windows:
+        rv=log_ret.rolling(w).std()*np.sqrt(trading_days)*100
+        if not rv.dropna().empty:
+            max_v.append(rv.max()); min_v.append(rv.min()); med_v.append(rv.median()); cur_v.append(rv.iloc[-1])
+    fig,ax=plt.subplots(figsize=(12,7))
+    ax.plot(windows,max_v,'o-',color='red',label='Max'); ax.plot(windows,min_v,'o-',color='green',label='Min')
+    ax.plot(windows,med_v,'s--',color='white',label='Median'); ax.plot(windows,cur_v,'X-',color='yellow',markersize=10,label='Current')
+    ax.fill_between(windows,min_v,max_v,alpha=0.2)
+    ax.set_title("Volatility Cone",fontweight='bold'); ax.set_xlabel("Window (days)"); ax.set_ylabel("Volatility (%)"); ax.legend()
+    plt.tight_layout(); return fig
+
+def plot_vrp():
+    if selected_market=="Crypto":
+        opt_df=fetch_deribit_option_chain("BTC" if 'BTC' in ticker else "ETH")
+        if opt_df is not None and not opt_df.empty:
+            atm_idx = (opt_df['strike']-asset_spot).abs().argsort()[:1]
+            iv = opt_df.iloc[atm_idx]['mark_iv'].values[0]*100 if len(atm_idx)>0 else garch_vol_asset
+        else: iv=garch_vol_asset
+        hist=get_hist_6mo(ticker)
+        if hist.empty: return None
+        log_ret=np.log(hist/hist.shift(1)).dropna()
+        hv_series=log_ret.rolling(20).std()*np.sqrt(365)*100; current_hv=hv_series.iloc[-1]
+        vrp=iv-current_hv; regime="Positive VRP (Sell Premium)" if vrp>0 else "Negative VRP (Buy Premium)"
+        fig,(ax1,ax2)=plt.subplots(2,1,figsize=(12,7),gridspec_kw={'height_ratios':[2,1]})
+        ax1.plot(hv_series.index,[iv]*len(hv_series),color='cyan',label=f'Implied Vol ({iv:.1f}%)')
+        ax1.plot(hv_series.index,hv_series,color='orange',label='20d Realized Vol')
+        ax1.fill_between(hv_series.index,hv_series,[iv]*len(hv_series),where=([iv]*len(hv_series)>hv_series),color='green',alpha=0.3)
+        ax1.fill_between(hv_series.index,hv_series,[iv]*len(hv_series),where=([iv]*len(hv_series)<=hv_series),color='red',alpha=0.3)
+        ax1.set_title("Volatility Risk Premium (VRP)",fontweight='bold'); ax1.legend()
+        ax2.bar(hv_series.index,[iv]*len(hv_series)-hv_series,color=np.where([iv]*len(hv_series)>hv_series,'green','red')); ax2.axhline(0,color='white')
+        props=dict(boxstyle='round',facecolor='black')
+        ax1.text(0.02,0.05,f"VRP: {vrp:+.1f}%\n{regime}",transform=ax1.transAxes,bbox=props,fontsize=12)
+    else:
+        vix=get_india_vix("6mo"); nifty=get_hist_6mo("^NSEI")
+        if vix is None or nifty.empty: return None
+        log_ret=np.log(nifty/nifty.shift(1)).dropna()
+        hv_series=log_ret.rolling(20).std()*np.sqrt(252)*100; iv=vix.iloc[-1]; current_hv=hv_series.iloc[-1]
+        vrp=iv-current_hv; regime="Positive VRP (Sell Premium)" if vrp>0 else "Negative VRP (Buy Premium)"
+        common_idx=vix.index.intersection(hv_series.index)
+        fig,(ax1,ax2)=plt.subplots(2,1,figsize=(12,7),gridspec_kw={'height_ratios':[2,1]})
+        ax1.plot(common_idx,vix[common_idx],color='cyan',label='India VIX')
+        ax1.plot(common_idx,hv_series[common_idx],color='orange',label='20d Realized Vol')
+        ax1.fill_between(common_idx,hv_series[common_idx],vix[common_idx],where=(vix[common_idx]>hv_series[common_idx]),color='green',alpha=0.3)
+        ax1.fill_between(common_idx,hv_series[common_idx],vix[common_idx],where=(vix[common_idx]<=hv_series[common_idx]),color='red',alpha=0.3)
+        ax1.set_title("Volatility Risk Premium (VRP)",fontweight='bold'); ax1.legend()
+        ax2.bar(common_idx,vix[common_idx]-hv_series[common_idx],color=np.where(vix[common_idx]>hv_series[common_idx],'green','red')); ax2.axhline(0,color='white')
+        props=dict(boxstyle='round',facecolor='black')
+        ax1.text(0.02,0.05,f"VRP: {vrp:+.1f}%\n{regime}",transform=ax1.transAxes,bbox=props,fontsize=12)
+    plt.tight_layout(); return fig
+
+# -----------------------------------------------------------------------------
+# NEW FEATURES (Multi‑TF, Payoff, Risk, News, Backtest, Auto‑trade)
+# -----------------------------------------------------------------------------
+def plot_mtf_chart(ticker, intervals=["15m","1h","4h"]):
+    figs = []
+    for interval in intervals:
+        df = yf_download_retry(ticker, period="5d", interval=interval)
+        if not df.empty:
+            df = flatten_df(df).tail(50)
+            fig = go.Figure(data=[go.Candlestick(
+                x=df.index, open=df['Open'], high=df['High'],
+                low=df['Low'], close=df['Close']
+            )])
+            fig.update_layout(title=f"{interval} Chart", xaxis_rangeslider_visible=False,
+                              template="plotly_dark", height=300)
+            figs.append(fig)
+    return figs
 
 def plot_payoff(strategy, spot, strikes, premium, T, r, sigma):
     prices = np.linspace(spot*0.8, spot*1.2, 100)
@@ -521,15 +766,188 @@ def plot_payoff(strategy, spot, strikes, premium, T, r, sigma):
     plt.tight_layout()
     return fig
 
-# (The rest of the helper functions – plot_correlation, plot_expected_move, plot_hurst,
-#  plot_ivr_ivp, plot_liquidity_sweep, plot_oi_profile, plot_parkinson,
-#  plot_volatility_cone, plot_vrp, fetch_binance_orderbook, get_binance_symbol,
-#  fetch_nse_options, compute_quick_stats, get_correlation_value,
-#  plot_mtf_chart, portfolio_risk, get_news_sentiment, auto_execute_wizard –
-#  must be present and are identical to the previous full version.)
+def portfolio_risk(positions, spot, garch_vol):
+    delta = gamma = theta = vega = 0
+    for pos in positions:
+        if pos['Type'] == 'Spot':
+            delta += 1 if pos['Direction']=='Long' else -1
+        else:
+            K = pos['Strike']
+            T = pos['Expiry']/252 if pos['Expiry'] else 1/252
+            r = 0.05; sigma = garch_vol/100
+            g = calc_greeks(spot, K, T, r, sigma, pos['Type'])
+            sign = 1 if pos['Direction']=='Long' else -1
+            delta += sign * g['delta']; gamma += sign * g['gamma']
+            theta += sign * g['theta']; vega += sign * g['vega']
+    margin = abs(delta) * spot * 0.1
+    return {'Delta': delta, 'Gamma': gamma, 'Theta': theta, 'Vega': vega, 'Margin': margin}
+
+def get_news_sentiment(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        news = stock.news
+        if not news: return []
+        headlines = [item['title'] for item in news[:5]]
+        try:
+            from textblob import TextBlob
+            sentiments = []
+            for headline in headlines:
+                blob = TextBlob(headline)
+                polarity = blob.sentiment.polarity
+                sentiment = "🟢" if polarity>0.1 else ("🔴" if polarity<-0.1 else "⚪")
+                sentiments.append((headline, sentiment, polarity))
+            return sentiments
+        except ImportError:
+            return [(h, "⚪", 0) for h in headlines]
+    except:
+        return []
+
+def auto_execute_wizard(signal, risk_perc, paper_balance, asset_spot, asset_choice, currency):
+    if signal and 'error' not in signal:
+        qty = (paper_balance * risk_perc / 100) / asset_spot
+        direction = "Long" if "Bull" in signal['suggested_strategy'] or "Long" in signal['direction'] else "Short"
+        cost = qty * asset_spot
+        if cost <= paper_balance:
+            paper_balance -= cost
+            pos = {'Asset': asset_choice, 'Direction': direction, 'Qty': qty,
+                   'Entry': asset_spot, 'Type': 'Spot',
+                   'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            return paper_balance, pos, True
+    return paper_balance, None, False
 
 # -----------------------------------------------------------------------------
-# COMPACT TOOLBAR (unchanged)
+# LIVE ORDER FLOW (Binance)
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_binance_orderbook(symbol="BTCUSDT", limit=20):
+    try:
+        url = "https://api.binance.com/api/v3/depth"
+        r = requests.get(url, params={"symbol": symbol, "limit": limit}, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            bids = pd.DataFrame(data['bids'], columns=['Price', 'Size'], dtype=float)
+            asks = pd.DataFrame(data['asks'], columns=['Price', 'Size'], dtype=float)
+            return bids, asks
+    except: pass
+    return None, None
+
+def get_binance_symbol(ticker):
+    mapping = {'BTC-USD': 'BTCUSDT', 'ETH-USD': 'ETHUSDT', 'DOGE-USD': 'DOGEUSDT', 'XRP-USD': 'XRPUSDT'}
+    return mapping.get(ticker, 'BTCUSDT')
+
+# -----------------------------------------------------------------------------
+# LIVE NIFTY/BANKNIFTY OPTIONS CHAIN
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_nse_options(index="^NSEI"):
+    try:
+        if index == "^NSEI": symbol = "NIFTY"
+        elif index == "^NSEBANK": symbol = "BANKNIFTY"
+        else: return None
+        spot_data = yf.download(index, period="2d", progress=False)
+        if spot_data.empty: return None
+        spot = spot_data['Close'].squeeze().iloc[-1]
+        strike_step = 50 if symbol == "NIFTY" else 100
+        atm = round(spot/strike_step)*strike_step
+        strikes = np.arange(atm - 10*strike_step, atm + 10*strike_step + strike_step, strike_step)
+        options = []
+        today = datetime.now()
+        days_to_expiry = 3 - today.weekday()
+        if days_to_expiry < 0: days_to_expiry += 7
+        expiry = today + timedelta(days=days_to_expiry)
+        expiry_str = expiry.strftime("%y%m%d")
+        for strike in strikes:
+            for opt_type in ['CE', 'PE']:
+                yahoo_ticker = f"{symbol}{expiry_str}{opt_type}{int(strike)}.NS"
+                try:
+                    opt_data = yf.download(yahoo_ticker, period="5d", progress=False)
+                    if not opt_data.empty:
+                        ltp = opt_data['Close'].squeeze().iloc[-1]
+                        oi = 0
+                        if 'Open Interest' in opt_data.columns:
+                            oi = opt_data['Open Interest'].squeeze().iloc[-1]
+                        options.append({'Strike': strike, 'Type': opt_type, 'LTP': ltp, 'OI': oi if not np.isnan(oi) else 0})
+                except: pass
+        return spot, pd.DataFrame(options)
+    except: return None, None
+
+# -----------------------------------------------------------------------------
+# CACHED QUICK STATS
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=120)
+def compute_quick_stats(ticker, asset_choice, asset_spot, garch_vol_asset, park_vol, ivr_val, ivp_val, trading_days, currency, selected_market, corr_val, corr_status):
+    quick_stats = {}
+    max_pain = None
+    if corr_val is not None:
+        quick_stats['Correlation'] = {'value': f"{corr_val:.2f}", 'status': corr_status, 'module': 'Correlation'}
+    if selected_market == "Crypto":
+        opt_df = fetch_deribit_option_chain("BTC" if 'BTC' in ticker else "ETH")
+        iv = (opt_df.iloc[(opt_df['strike']-asset_spot).abs().argsort()[:1]]['mark_iv'].values[0]*100
+              if opt_df is not None and not opt_df.empty else garch_vol_asset)
+        daily_move = asset_spot * (iv/100) * np.sqrt(1/365)
+        quick_stats['Exp. Move (D)'] = {'value': f"±{currency}{daily_move:,.0f}", 'status': '1σ Range', 'module': 'Expected Move'}
+    else:
+        vix_data = get_india_vix("5d")
+        if vix_data is not None:
+            iv = float(vix_data.iloc[-1])
+            daily_move = asset_spot * (iv/100) * np.sqrt(1/365)
+            quick_stats['Exp. Move (D)'] = {'value': f"±{currency}{daily_move:,.0f}", 'status': '1σ Range', 'module': 'Expected Move'}
+    close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
+    log_p = np.log(close); hurst_series = log_p.rolling(60).apply(lambda x: calculate_hurst_exponent(x) if len(x)>=20 else np.nan, raw=False)
+    df = pd.DataFrame({'Close':close,'Hurst':hurst_series}).dropna()
+    if not df.empty:
+        hurst_val = df['Hurst'].iloc[-1]
+        if np.isnan(hurst_val):
+            quick_stats['Hurst'] = {'value': "N/A", 'status': "Insufficient data", 'module': 'Hurst Exponent'}
+        else:
+            if hurst_val>0.55: hurst_status="Trending"
+            elif hurst_val<0.45: hurst_status="Mean Rev."
+            else: hurst_status="Random"
+            quick_stats['Hurst'] = {'value': f"{hurst_val:.3f}", 'status': hurst_status, 'module': 'Hurst Exponent'}
+    else:
+        quick_stats['Hurst'] = {'value': "N/A", 'status': "Insufficient data", 'module': 'Hurst Exponent'}
+    if ivr_val is not None:
+        quick_stats['IVR/IVP'] = {'value': f"{ivr_val:.0f}% / {ivp_val:.0f}%", 'status': get_ivr_label(ivr_val), 'module': 'IV Rank & IV Percentile'}
+    fig_park, park_val = plot_parkinson()
+    if park_val is not None:
+        quick_stats['Parkinson'] = {'value': f"{park_val:.1f}%", 'status': "Intraday Vol", 'module': 'Parkinson Estimator'}
+    else:
+        quick_stats['Parkinson'] = {'value': "N/A", 'status': "No data", 'module': 'Parkinson Estimator'}
+    intra_df = fetch_intraday(ticker, "30m")
+    if intra_df is not None:
+        df_temp = intra_df.tail(60).copy()
+        df_temp['Prev_High'] = df_temp['High'].rolling(20).max().shift(1)
+        df_temp['Prev_Low'] = df_temp['Low'].rolling(20).min().shift(1)
+        supply = (df_temp['High'] > df_temp['Prev_High']) & (df_temp['Close'] < df_temp['Prev_High'])
+        demand = (df_temp['Low'] < df_temp['Prev_Low']) & (df_temp['Close'] > df_temp['Prev_Low'])
+        sweep = "Supply Swept" if supply.iloc[-1] else ("Demand Swept" if demand.iloc[-1] else "Price Discovery")
+        quick_stats['Liq. Sweep'] = {'value': sweep, 'status': '', 'module': 'Liquidity Detector'}
+    step = get_asset_step(asset_spot); base = round(asset_spot/step)*step
+    strikes = np.arange(base - 8*step, base + 9*step, step)
+    np.random.seed(int(asset_spot)%1234)
+    calls = np.random.randint(10,80,len(strikes)).astype(float)*50000
+    puts = np.random.randint(10,80,len(strikes)).astype(float)*50000
+    pain = {k: np.sum(np.maximum(0, k-strikes)*calls + np.maximum(0, strikes-k)*puts) for k in strikes}
+    max_pain = min(pain, key=pain.get)
+    quick_stats['Max Pain'] = {'value': f"{currency}{max_pain:,.0f}", 'status': f"Spot: {currency}{asset_spot:,.0f}", 'module': 'Open Interest Profile'}
+    return quick_stats, max_pain
+
+def get_correlation_value():
+    corr_data = st.session_state.get('correlation_data')
+    if corr_data is None or corr_data.empty: return None, None
+    data = corr_data.dropna()
+    n1, n2 = ("Bitcoin","Ethereum") if selected_market=="Crypto" else ("Nifty 50","Bank Nifty")
+    data.columns = [n1, n2]
+    log_ret = np.log(data / data.shift(1)).dropna()
+    rolling_corr = log_ret[n1].rolling(20).corr(log_ret[n2])
+    val = rolling_corr.iloc[-1]
+    if val > 0.8: status = "High"
+    elif val < 0.5: status = "Severe Divergence"
+    else: status = "Moderate"
+    return val, status
+
+# -----------------------------------------------------------------------------
+# COMPACT TOOLBAR
 # -----------------------------------------------------------------------------
 toolbar_col1, toolbar_col2, toolbar_col3, toolbar_col4, toolbar_col5 = st.columns([2, 1, 1, 1, 2])
 with toolbar_col1:
@@ -558,7 +976,7 @@ with toolbar_col5:
     ticker = TICKER_DICT[asset_choice]
 
 # -----------------------------------------------------------------------------
-# SIDEBAR (unchanged)
+# SIDEBAR
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("## 🧬 AlphaQuant Terminal")
@@ -591,7 +1009,7 @@ with st.sidebar:
     st.session_state.active_tab = tab
 
 # -----------------------------------------------------------------------------
-# INITIAL DATA LOADING (unchanged)
+# INITIAL DATA LOADING
 # -----------------------------------------------------------------------------
 current_keys = set(TICKER_DICT.keys())
 if 'long_hist_data' not in st.session_state or set(st.session_state['long_hist_data'].keys()) != current_keys:
@@ -647,14 +1065,14 @@ trade_bias_label = get_trade_bias(garch_vol_asset, ivr_val, corr_val)
 playbook_strategies = get_playbook(garch_vol_asset, ivr_val, corr_val)
 
 # -----------------------------------------------------------------------------
-# FULL DASHBOARD (complete, with all new features)
+# FULL DASHBOARD (with all new features integrated)
 # -----------------------------------------------------------------------------
 active_tab = st.session_state.get('active_tab', '📊 Dashboard & Analytics')
 
 if active_tab == "📊 Dashboard & Analytics":
     st.title("📊 Market Intelligence Dashboard")
 
-    # Market Overview (same as before)
+    # Market Overview
     with st.container(border=True):
         st.markdown('<p class="section-header">🌍 Market Overview</p>', unsafe_allow_html=True)
         if selected_market == "Crypto":
@@ -677,7 +1095,7 @@ if active_tab == "📊 Dashboard & Analytics":
                     st.markdown(f"""<div class="metric-card"><h3>📈 Sensex</h3><div class="value">{indian_data['sensex']:,.0f}</div><div class="delta">{indian_data['sensex_change']:+.2f}%</div></div>""", unsafe_allow_html=True)
             else: st.warning("Indian market summary not available.")
 
-    # Active Asset Detail (unchanged)
+    # Active Asset Detail
     with st.container(border=True):
         st.markdown('<p class="section-header">🎯 Active Asset Details</p>', unsafe_allow_html=True)
         if asset_spot == 0:
@@ -736,7 +1154,7 @@ if active_tab == "📊 Dashboard & Analytics":
             max_risk_amount = st.session_state.paper_balance * max_risk_pct / 100
             st.write(f"💼 **Max risk per trade:** {currency}{max_risk_amount:,.0f} ({max_risk_pct}% of capital)")
 
-    # Indian Market Real‑Time Greeks (unchanged)
+    # Indian Market Real‑Time Greeks
     if selected_market == "Indian Market" and ('Nifty' in asset_choice or 'Bank Nifty' in asset_choice):
         with st.expander("📐 Real‑Time Option Greeks (ATM)"):
             vix_data = get_india_vix("5d")
@@ -769,7 +1187,7 @@ if active_tab == "📊 Dashboard & Analytics":
             else:
                 st.warning("VIX data not available for Greeks.")
 
-    # Live Terminal (unchanged)
+    # Live Terminal Section
     with st.expander("💹 Live Terminal (Chart, Order Book, Quick Trade)", expanded=False):
         st.caption("Real‑time price chart, order book, and quick paper trade panel.")
         if st.button("🔄 Refresh Live Data"):
@@ -855,7 +1273,7 @@ if active_tab == "📊 Dashboard & Analytics":
             total_unrealized = pos_df['P&L'].sum()
             st.metric("Unrealized P&L", f"{currency}{total_unrealized:,.2f}")
 
-    # Multi‑Timeframe Chart (unchanged)
+    # Multi‑Timeframe Chart
     with st.expander("📊 Multi‑Timeframe Chart (15m, 1h, 4h)"):
         figs = plot_mtf_chart(ticker)
         if figs:
@@ -864,7 +1282,7 @@ if active_tab == "📊 Dashboard & Analytics":
         else:
             st.warning("Could not fetch intraday data.")
 
-    # Options Payoff Diagram (FIXED)
+    # Options Payoff Diagram
     with st.expander("📉 Options Payoff Diagram (Quick Builder)"):
         st.markdown("Build a simple multi‑leg strategy and see payoff at expiry.")
         num_legs = st.number_input("Number of legs", min_value=1, max_value=4, value=1, key="payoff_legs")
@@ -872,7 +1290,7 @@ if active_tab == "📊 Dashboard & Analytics":
         for i in range(num_legs):
             col1, col2, col3, col4 = st.columns(4)
             with col1: leg_type = st.selectbox(f"Leg {i+1} Type", ["Long Call","Short Call","Long Put","Short Put"], key=f"ptype_{i}")
-            with col2: strike = st.number_input(f"Strike {i+1}", value=float(asset_spot), step=float(get_asset_step(asset_spot)), key=f"pstrike_{i}")
+            with col2: strike = st.number_input(f"Strike {i+1}", value=asset_spot, step=get_asset_step(asset_spot), key=f"pstrike_{i}")
             with col3: premium = st.number_input(f"Premium {i+1}", value=5.0, step=0.5, key=f"pprem_{i}")
             with col4: quantity = st.number_input(f"Qty {i+1}", value=1, step=1, key=f"pqty_{i}")
             legs_data.append((leg_type, strike, premium, quantity))
@@ -885,7 +1303,7 @@ if active_tab == "📊 Dashboard & Analytics":
             fig = plot_payoff(strategy_labels, asset_spot, strikes, premiums, T, r, sigma)
             st.pyplot(fig)
 
-    # Portfolio Risk Dashboard (unchanged)
+    # Portfolio Risk Dashboard
     with st.expander("📊 Portfolio Risk Dashboard"):
         risk = portfolio_risk(st.session_state['paper_positions'], asset_spot, garch_vol_asset)
         col1,col2,col3,col4,col5 = st.columns(5)
@@ -896,7 +1314,7 @@ if active_tab == "📊 Dashboard & Analytics":
         col5.metric("Margin Req.", f"{currency}{risk['Margin']:,.0f}")
         st.caption("Approximate margin estimate. Greeks are for all open positions.")
 
-    # News Sentiment (unchanged)
+    # News Sentiment
     with st.expander("📰 News Sentiment"):
         sentiments = get_news_sentiment(ticker)
         if sentiments:
@@ -905,7 +1323,7 @@ if active_tab == "📊 Dashboard & Analytics":
         else:
             st.info("No recent news or unable to fetch.")
 
-    # One‑Click Backtesting (unchanged)
+    # One‑Click Backtesting
     with st.expander("🧪 One‑Click Backtesting (Playbook)"):
         st.markdown("Backtest the current trade bias strategy on the last 6 months.")
         if st.button("Run Backtest"):
@@ -934,20 +1352,308 @@ if active_tab == "📊 Dashboard & Analytics":
             else:
                 st.info("Neutral bias – no backtest performed.")
 
-    # Quick Analytics, Market Summary, Detailed Charts (unchanged)
-    # ... (include all the sections from the previous full dashboard)
+    # Quick Analytics Overview
+    with st.container(border=True):
+        st.markdown('<p class="section-header">⚡ Quick Analytics Overview</p>', unsafe_allow_html=True)
+        n_cols = 4
+        keys = list(quick_stats.keys())
+        for i in range(0, len(keys), n_cols):
+            cols = st.columns(n_cols)
+            for j in range(n_cols):
+                idx = i+j
+                if idx < len(keys):
+                    key = keys[idx]; stat = quick_stats[key]
+                    with cols[j]:
+                        st.markdown(f"""<div class="quick-stat"><strong>{key}</strong><br><span style="font-size:1.2rem;">{stat['value']}</span><br><small>{stat['status']}</small></div>""", unsafe_allow_html=True)
+                        if st.button("🔍", key=f"btn_{key}", help="View detailed chart"):
+                            st.session_state['selected_analysis'] = stat['module']; st.rerun()
+        with st.expander("📖 What each metric means"):
+            st.markdown("""
+| Metric | What it tells you |
+|--------|-------------------|
+| **Correlation** | How closely two indices move together. High = lockstep, Low = decoupling. |
+| **Expected Move (D)** | The +/-1σ range for tomorrow. Use it to set strike distances. |
+| **Hurst** | Market regime: Trending (>0.55), Mean‑reverting (<0.45), or Random. |
+| **IVR/IVP** | IV Rank shows if options are cheap or expensive. High IV = sell premium, Low IV = buy premium. |
+| **Parkinson** | Volatility from intraday high‑low range. High = large intraday swings. |
+| **Liq. Sweep** | Detects institutional absorption. Supply sweep = bearish, Demand sweep = bullish. |
+| **Max Pain** | Strike where option sellers profit most. Price often gravitates toward it. |
+            """)
+
+    # Market Status – Plain English
+    with st.container(border=True):
+        st.markdown('<p class="section-header">🧠 Market Status – Plain English</p>', unsafe_allow_html=True)
+        with st.container():
+            st.markdown('<div class="market-summary">', unsafe_allow_html=True)
+            summary_lines = []
+            if 'Liq. Sweep' in quick_stats:
+                sweep = quick_stats['Liq. Sweep']['value']
+                if 'Supply' in sweep: summary_lines.append("**Intraday** – 🔻 Supply swept: sellers absorbed, bearish pressure. Keep stops tight.")
+                elif 'Demand' in sweep: summary_lines.append("**Intraday** – 🔺 Demand swept: buyers absorbed, bullish pressure. Look for long scalps.")
+                else: summary_lines.append("**Intraday** – 🔹 No clear sweep; price in discovery. Wait for structural break.")
+            if intraday_move:
+                summary_lines.append(f"**Intraday** – 📏 Intraday range ±{currency}{intraday_move:,.0f}. Scalp inside, swing if break.")
+            if 'Hurst' in quick_stats:
+                h_str = quick_stats['Hurst']['value']
+                try:
+                    h = float(h_str)
+                    if h > 0.55: summary_lines.append(f"**Swing (2–5d)** – 🚀 Hurst {h:.3f} trending; use pullback entries, trailing stops.")
+                    elif h < 0.45: summary_lines.append(f"**Swing (2–5d)** – 🔄 Hurst {h:.3f} mean‑reverting; fade breakouts, take profits at mean.")
+                    else: summary_lines.append(f"**Swing (2–5d)** – ⚪ Hurst {h:.3f} random; avoid aggressive directional bets.")
+                except: summary_lines.append("**Swing (2–5d)** – ⚪ Hurst unavailable; trend signals muted.")
+            if 'Correlation' in quick_stats:
+                try:
+                    corr = float(quick_stats['Correlation']['value'])
+                    if corr > 0.8: summary_lines.append("**Swing (2–5d)** – 📈 High correlation; positions move together, reduce correlated risk.")
+                    elif corr < 0.5: summary_lines.append("**Swing (2–5d)** – ⚠️ Decoupling; favor pair trades or neutral strategies.")
+                except: pass
+            if 'IVR/IVP' in quick_stats:
+                ivr_status = quick_stats['IVR/IVP']['status']
+                summary_lines.append(f"**Positional (2–4w)** – 🎯 {ivr_status}")
+            if 'Exp. Move (D)' in quick_stats:
+                move_str = quick_stats['Exp. Move (D)']['value']
+                summary_lines.append(f"**Positional (2–4w)** – 📏 Daily expected move: {move_str}. Use for strike selection.")
+            if 'Parkinson' in quick_stats and quick_stats['Parkinson']['value'] != "N/A":
+                try:
+                    park_val = float(quick_stats['Parkinson']['value'].replace('%',''))
+                    if park_val > garch_vol_asset:
+                        summary_lines.append(f"**Positional (2–4w)** – 📊 Parkinson vol {park_val:.1f}% > GARCH; large intraday swings. Reduce size, widen stops.")
+                except: pass
+            if summary_lines:
+                for line in summary_lines:
+                    st.markdown(line)
+            else:
+                st.info("Gathering market data...")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    # Detailed Chart Section
+    with st.container(border=True):
+        st.markdown('<p class="section-header">📈 Detailed Analysis</p>', unsafe_allow_html=True)
+        module_names = ["Correlation","Expected Move","Hurst Exponent","IV Rank & IV Percentile",
+                        "Liquidity Detector","Open Interest Profile","Parkinson Estimator",
+                        "Volatility Cone","Volatility Risk Premium (VRP)"]
+        current_idx = module_names.index(st.session_state['selected_analysis']) if st.session_state['selected_analysis'] in module_names else 0
+        module = st.selectbox("Select Analysis", module_names, index=current_idx)
+        if module != st.session_state['selected_analysis']:
+            st.session_state['selected_analysis'] = module; st.rerun()
+        with st.spinner(f"Generating {module}..."):
+            if module == "Correlation":
+                fig = plot_correlation()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** When correlation drops below 0.5, markets are decoupling → sector rotation or stress.")
+            elif module == "Expected Move":
+                fig = plot_expected_move()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** Shows the +/-1σ range for the next day. Use these levels for strike selection and risk management.")
+            elif module == "Hurst Exponent":
+                fig = plot_hurst()
+                if fig: st.pyplot(fig)
+                else: st.warning("Insufficient data for Hurst calculation.")
+                st.markdown("**What it indicates:** H > 0.55 = trending, H < 0.45 = mean‑reverting.")
+            elif module == "IV Rank & IV Percentile":
+                fig = plot_ivr_ivp()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** IVR > 50 = sell premium, IVR < 50 = buy premium.")
+            elif module == "Liquidity Detector":
+                fig = plot_liquidity_sweep()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** Sweeps show where institutions absorbed liquidity. Supply sweep = bearish, Demand sweep = bullish.")
+            elif module == "Open Interest Profile":
+                fig = plot_oi_profile()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** Simulated OI profile – not real data. For demonstration only.")
+            elif module == "Parkinson Estimator":
+                fig_park, park_val = plot_parkinson()
+                if fig_park:
+                    st.pyplot(fig_park)
+                    st.markdown(f"**Current Parkinson Vol:** {park_val:.1f}% — High values relative to GARCH indicate large intraday swings; adjust stops accordingly.")
+                else: st.warning("Parkinson volatility could not be calculated.")
+            elif module == "Volatility Cone":
+                fig = plot_volatility_cone()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** Where current vol sits inside the cone helps assess if options are historically cheap or expensive.")
+            elif module == "Volatility Risk Premium (VRP)":
+                fig = plot_vrp()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** Positive VRP = implied > actual (sell premium). Negative VRP = actual > implied (buy premium).")
 
 elif active_tab == "📄 Paper Trading":
-    # ... (unchanged)
-    pass
+    st.title("📄 Paper Trading")
+    st.markdown(f"Simulate trades with a **{currency}100,000** virtual account.")
+    col_bal, col_pnl = st.columns(2)
+    with col_bal: st.metric("Cash Balance", f"{currency}{st.session_state['paper_balance']:,.2f}")
+    unrealized_pnl = 0
+    for pos in st.session_state['paper_positions']:
+        if pos['Type'] == 'Spot':
+            unrealized_pnl += (asset_spot - pos['Entry']) * pos['Qty'] if pos['Direction'] == 'Long' else (pos['Entry'] - asset_spot) * pos['Qty']
+    total_equity = st.session_state['paper_balance'] + unrealized_pnl
+    col_pnl.metric("Total Equity", f"{currency}{total_equity:,.2f}", delta=f"Unrealized: {currency}{unrealized_pnl:,.2f}")
+    with st.expander("⚡ Quick Trade (Manual)"):
+        with st.form("paper_trade_form"):
+            c1, c2 = st.columns(2)
+            asset = c1.selectbox("Asset", list(TICKER_DICT.keys()), key="paper_asset")
+            direction = c2.selectbox("Direction", ["Long", "Short"])
+            qty = st.number_input("Quantity", min_value=0.01, value=0.01, step=0.01)
+            price = st.number_input("Price", value=asset_spot)
+            if st.form_submit_button("Execute Trade"):
+                cost = qty * price
+                if cost > st.session_state['paper_balance']:
+                    st.error("Insufficient balance!")
+                else:
+                    st.session_state['paper_balance'] -= cost
+                    st.session_state['paper_positions'].append({
+                        'Asset': asset, 'Direction': direction, 'Qty': qty,
+                        'Entry': price, 'Type': 'Spot',
+                        'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    })
+                    st.session_state['paper_trade_history'].append({
+                        'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'Asset': asset, 'Direction': direction, 'Qty': qty,
+                        'Price': price, 'Cost': cost, 'Action': 'Open'
+                    })
+                    st.success(f"Bought {qty} {asset} @ {currency}{price:,.2f}")
+    if st.session_state['paper_positions']:
+        st.subheader("📋 Open Positions")
+        pos_df = pd.DataFrame(st.session_state['paper_positions']); pos_df.index = range(1, len(pos_df)+1)
+        st.dataframe(pos_df)
+        close_idx = st.selectbox("Select position to close", pos_df.index)
+        close_price = st.number_input("Close Price", value=asset_spot)
+        if st.button("Close Position"):
+            pos = pos_df.loc[close_idx]
+            pnl = (close_price - pos['Entry']) * pos['Qty'] if pos['Direction']=='Long' else (pos['Entry'] - close_price) * pos['Qty']
+            st.session_state['paper_balance'] += (pos['Entry'] * pos['Qty'] + pnl)
+            st.session_state['paper_trade_history'].append({
+                'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'Asset': pos['Asset'], 'Direction': pos['Direction'], 'Qty': pos['Qty'],
+                'Price': close_price, 'PnL': pnl, 'Action': 'Close'
+            })
+            st.session_state['paper_positions'].pop(close_idx-1)
+            st.success(f"Closed position with P&L: {currency}{pnl:,.2f}"); st.rerun()
+    if st.session_state['paper_trade_history']:
+        st.subheader("📜 Trade History")
+        hist_df = pd.DataFrame(st.session_state['paper_trade_history']); st.dataframe(hist_df)
+        if 'PnL' in hist_df.columns:
+            total_realized = hist_df['PnL'].sum(); win_trades = hist_df[hist_df['PnL'] > 0]
+            st.metric("Total Realized P&L", f"{currency}{total_realized:,.2f}")
+            if len(hist_df[~hist_df['PnL'].isna()]) > 0:
+                st.metric("Win Rate", f"{len(win_trades) / len(hist_df[~hist_df['PnL'].isna()]) * 100:.1f}%")
+    else: st.info("No trades executed yet.")
+    if st.button("Reset Paper Account"):
+        st.session_state['paper_balance'] = 100000; st.session_state['paper_positions'] = []; st.session_state['paper_trade_history'] = []; st.rerun()
 
 elif active_tab == "🧙 Strategy Wizard":
-    # ... (unchanged)
-    pass
+    st.title("🧙 Strategy Wizard")
+    signal_w = get_intraday_signal(asset_choice, ticker)
+    if signal_w is not None and 'error' not in signal_w:
+        st.write(f"**Market Regime:** {signal_w['regime']}")
+        st.write(f"**Vol Environment:** {signal_w['vol_environment']}")
+        st.write(f"**Suggested Strategy:** {signal_w['suggested_strategy']}")
+        st.write(f"**Confidence:** {signal_w['confidence']}%")
+        dte_w = st.slider("Select DTE", 0, 7, 4)
+        risk_perc = st.slider("Risk % per trade", 0.5, 5.0, 1.0, 0.5)
+        auto = st.checkbox("Auto‑Execute every refresh")
+        if auto and st.session_state['live_mode']:
+            st.info("Auto‑executing based on signal...")
+            balance, pos, executed = auto_execute_wizard(signal_w, risk_perc, st.session_state['paper_balance'],
+                                                         asset_spot, asset_choice, currency)
+            if executed:
+                st.session_state['paper_balance'] = balance
+                st.session_state['paper_positions'].append(pos)
+                st.success(f"Opened {pos['Direction']} {pos['Qty']:.4f} {asset_choice} @ {currency}{asset_spot:,.2f}")
+        elif auto:
+            st.warning("Enable Live Mode to use auto‑execution.")
+        if st.button("Execute via Paper Trading"):
+            balance, pos, executed = auto_execute_wizard(signal_w, risk_perc, st.session_state['paper_balance'],
+                                                         asset_spot, asset_choice, currency)
+            if executed:
+                st.session_state['paper_balance'] = balance
+                st.session_state['paper_positions'].append(pos)
+                st.success(f"Opened {pos['Direction']} {pos['Qty']:.4f} {asset_choice} @ {currency}{asset_spot:,.2f}")
+            else:
+                st.error("Insufficient balance or no signal.")
+    else:
+        st.warning("Signal unavailable.")
 
 elif active_tab == "📓 Journal":
-    # ... (unchanged)
-    pass
+    st.title("📓 Trading Journal & Analytics")
+    if st.button("📸 Log Current Snapshot"):
+        snapshot = {
+            'timestamp': datetime.now().isoformat(),
+            'asset': asset_choice,
+            'spot': asset_spot,
+            'garch_vol': garch_vol_asset,
+            'gjrgarch_vol': gjrgarch_vol,
+            'park_vol': park_vol,
+            'ivr': ivr_val,
+            'ivp': ivp_val,
+            'corr': corr_val,
+            'trade_bias': trade_bias_label,
+            'playbook': playbook_strategies,
+        }
+        st.session_state.setdefault('snapshots', []).append(snapshot)
+        st.success("Snapshot saved!")
+    with st.expander("➕ New Trade Entry"):
+        with st.form("trade_form"):
+            c1,c2,c3 = st.columns(3)
+            asset = c1.selectbox("Asset", list(TICKER_DICT.keys()), key="journal_asset")
+            dir = c2.selectbox("Direction", ["Long","Short"])
+            entry = c3.number_input("Entry Price", min_value=0.0, step=0.01, format="%.2f")
+            exit_p = st.number_input("Exit Price", min_value=0.0, step=0.01, format="%.2f")
+            qty = st.number_input("Quantity", min_value=0.0, step=0.01, format="%.4f")
+            date = st.date_input("Date", datetime.today()); notes = st.text_area("Notes")
+            if st.form_submit_button("Log Trade"):
+                if entry<=0 or exit_p<=0 or qty<=0: st.error("Prices and quantity must be positive.")
+                else:
+                    pnl = (exit_p-entry)*qty if dir=="Long" else (entry-exit_p)*qty
+                    regime_tag = f"IVR={ivr_val:.0f}, GARCH={garch_vol_asset:.0f}, Corr={corr_val:.2f}"
+                    st.session_state['trade_journal'].append({
+                        "Date":date.strftime("%Y-%m-%d"),"Asset":asset,"Direction":dir,
+                        "Entry":entry,"Exit":exit_p,"Quantity":qty,"P&L":round(pnl,2),"Notes":notes,
+                        "Regime": regime_tag
+                    })
+                    st.success("Trade logged!")
+    snapshots = st.session_state.get('snapshots', [])
+    if snapshots:
+        st.subheader("📸 Saved Snapshots")
+        df_snaps = pd.DataFrame(snapshots)
+        st.dataframe(df_snaps)
+    if st.session_state['trade_journal']:
+        jdf = pd.DataFrame(st.session_state['trade_journal'])
+        if not jdf.empty:
+            st.subheader("📈 Performance Analytics")
+            jdf['Date'] = pd.to_datetime(jdf['Date'])
+            jdf = jdf.sort_values('Date')
+            jdf['Cumulative P&L'] = jdf['P&L'].cumsum()
+            fig, ax = plt.subplots(figsize=(12,6))
+            ax.plot(jdf['Date'], jdf['Cumulative P&L'], marker='o', color='cyan')
+            ax.set_title("Cumulative P&L", fontweight='bold')
+            ax.grid(True, color='#2A2A2A')
+            st.pyplot(fig)
+            if 'Regime' in jdf.columns and not jdf['Regime'].isnull().all():
+                regime_stats = jdf.groupby('Regime').agg(
+                    Win_Rate = ('P&L', lambda x: (x>0).mean()*100),
+                    Total_PnL = ('P&L', 'sum'),
+                    Count = ('P&L', 'count')
+                ).round(2)
+                st.subheader("📊 Strategy Performance by Regime")
+                st.dataframe(regime_stats.style.format({'Win_Rate':'{:.1f}%', 'Total_PnL':f'{currency}{{:,.2f}}'}))
+            total_trades = len(jdf)
+            if total_trades > 0:
+                wins = jdf[jdf['P&L'] > 0]
+                losses = jdf[jdf['P&L'] < 0]
+                win_rate = len(wins)/total_trades if total_trades else 0
+                avg_win = wins['P&L'].mean() if not wins.empty else 0
+                avg_loss = abs(losses['P&L'].mean()) if not losses.empty else 1
+                if avg_loss > 0:
+                    b = avg_win / avg_loss
+                    kelly = win_rate - (1-win_rate)/b
+                    kelly = max(0, min(kelly, 0.25))
+                else:
+                    kelly = 0
+                st.metric("Optimal Kelly Fraction", f"{kelly:.2%}")
+                st.caption(f"Based on {total_trades} trades – suggests risking {kelly*100:.1f}% of capital per trade.")
+    else:
+        st.info("No trades recorded yet.")
 
 st.markdown("---")
 st.caption("AlphaQuant Terminal Pro · All‑in‑One Trading Cockpit")
