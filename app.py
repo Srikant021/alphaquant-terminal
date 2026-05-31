@@ -105,7 +105,7 @@ plt.style.use('dark_background')
 logging.basicConfig(level=logging.INFO); logger=logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
-# HELPERS
+# HELPERS (unchanged)
 # -----------------------------------------------------------------------------
 def yf_download_retry(*args, max_retries=3, **kwargs):
     for attempt in range(max_retries):
@@ -343,7 +343,7 @@ def check_auto_exit(pos, current_price, atr14):
     return False
 
 # -----------------------------------------------------------------------------
-# ENHANCED SIGNAL
+# ENHANCED SIGNAL (unchanged)
 # -----------------------------------------------------------------------------
 def get_intraday_signal(asset_choice, ticker, park_vol=None, ivr=None, ivp=None,
                         deribit_iv=None, confluence=0, funding_rate=None):
@@ -507,7 +507,7 @@ def get_ivr_label(ivr):
     else: return f"Mid IV (IVR {ivr:.0f}%) – Mixed, favour defined risk"
 
 # -----------------------------------------------------------------------------
-# ANALYTICS PLOT FUNCTIONS (all unchanged)
+# UPDATED ANALYTICS PLOT FUNCTIONS (Expected Move & Hurst redesigned)
 # -----------------------------------------------------------------------------
 def plot_correlation():
     if 'correlation_data' not in st.session_state: return None
@@ -536,6 +536,7 @@ def plot_correlation():
 
 def plot_expected_move():
     if selected_market == "Crypto":
+        # Fetch Deribit ATM IV or fallback to GARCH
         opt_df = fetch_deribit_option_chain("BTC" if 'BTC' in ticker else "ETH")
         if opt_df is not None and not opt_df.empty:
             atm_idx = (opt_df['strike'] - asset_spot).abs().argsort()[:1]
@@ -545,58 +546,118 @@ def plot_expected_move():
                 iv = garch_vol_asset
         else:
             iv = garch_vol_asset
-        days_in_year, spot_label, vix_label = 365, f"Spot: {currency}{asset_spot:,.0f}", f"ATM IV: {iv:.1f}%"
+        spot_label = f"Spot: {currency}{asset_spot:,.0f}"
+        iv_label = f"ATM IV: {iv:.1f}%"
+        recent = get_recent_month(ticker)  # last 15 days
     else:
+        # Indian market: use India VIX
         vix_data = get_india_vix("5d")
         if vix_data is None:
             st.error("Could not fetch India VIX")
             return None
         iv = float(vix_data.iloc[-1])
-        days_in_year, spot_label, vix_label = 365, f"Nifty: {asset_spot:,.0f}", f"India VIX: {iv:.2f}"
+        spot_label = f"Nifty: {asset_spot:,.0f}"
+        iv_label = f"India VIX: {iv:.2f}"
+        # Fetch last 1 month Nifty data for visual context
+        nifty_data = yf_download_retry("^NSEI", period="1mo")
+        if nifty_data.empty:
+            return None
+        recent = nifty_data['Close'].squeeze().tail(15)
 
-    t_daily, t_weekly, t_monthly = 1/days_in_year, 7/days_in_year, 30/days_in_year
-    move_daily = asset_spot * (iv/100) * np.sqrt(t_daily)
-    move_weekly = asset_spot * (iv/100) * np.sqrt(t_weekly)
-    move_monthly = asset_spot * (iv/100) * np.sqrt(t_monthly)
+    if recent.empty:
+        return None
 
-    recent = get_recent_month(ticker)
-    if recent.empty: return None
-    fig, ax = plt.subplots(figsize=(12,6))
-    x = np.arange(len(recent)); ax.plot(x, recent.values, 'o-', color='cyan', label='Price')
-    tmr = len(recent); ax.scatter(tmr, asset_spot, color='white', s=80, zorder=5)
-    for color, move, label in [('yellow', move_daily,'Daily'),('orange',move_weekly,'Weekly'),('red',move_monthly,'Monthly')]:
-        upper = asset_spot+move; lower = asset_spot-move
-        ax.vlines(tmr, lower, upper, color=color, linewidth=2, label=f'{label} Range')
-        ax.scatter(tmr, upper, color=color, marker='^', s=100)
-        ax.scatter(tmr, lower, color=color, marker='v', s=100)
-    ax.set_title("Expected Move (Daily, Weekly, Monthly)", fontweight='bold')
-    ax.set_xticks([]); ax.legend(loc='upper left', facecolor='black', edgecolor='gray')
-    text_str = (f"{vix_label}\n{spot_label}\n"
-                f"Daily: ±{move_daily:,.0f}  [{asset_spot-move_daily:,.0f}–{asset_spot+move_daily:,.0f}]\n"
-                f"Weekly: ±{move_weekly:,.0f}  [{asset_spot-move_weekly:,.0f}–{asset_spot+move_weekly:,.0f}]\n"
-                f"Monthly: ±{move_monthly:,.0f}  [{asset_spot-move_monthly:,.0f}–{asset_spot+move_monthly:,.0f}]")
-    props = dict(boxstyle='round', facecolor='black', edgecolor='white')
-    ax.text(0.02,0.98, text_str, transform=ax.transAxes, fontsize=11, verticalalignment='top', bbox=props, color='white', fontweight='bold')
+    daily_volatility = (iv / 100) * np.sqrt(1/365) if selected_market == "Crypto" else (iv / 100) * np.sqrt(1/365)
+    expected_move_points = asset_spot * daily_volatility
+    upper_bound = asset_spot + expected_move_points
+    lower_bound = asset_spot - expected_move_points
+
+    fig, ax = plt.subplots(figsize=(12, 7), dpi=120)
+    x_dates = np.arange(len(recent))
+    ax.plot(x_dates, recent.values, color='#00FFFF', linewidth=2, marker='o', label='Price')
+    tomorrow_x = len(recent)
+    ax.hlines(asset_spot, xmin=x_dates[-1], xmax=tomorrow_x, color='white', linestyle='-', linewidth=2)
+    ax.scatter(tomorrow_x, asset_spot, color='white', s=70, zorder=5)
+    ax.scatter(tomorrow_x, upper_bound, color='#00FF00', s=120, marker='^', zorder=5)
+    ax.scatter(tomorrow_x, lower_bound, color='#FF3333', s=120, marker='v', zorder=5)
+    ax.hlines(upper_bound, xmin=x_dates[-1], xmax=tomorrow_x, color='#00FF00', linestyle='--', linewidth=1.5, label='Upper Bound (+1 SD)')
+    ax.hlines(lower_bound, xmin=x_dates[-1], xmax=tomorrow_x, color='#FF3333', linestyle='--', linewidth=1.5, label='Lower Bound (-1 SD)')
+    ax.fill_between([x_dates[-1], tomorrow_x], [asset_spot, lower_bound], [asset_spot, upper_bound], color='gray', alpha=0.2)
+
+    ax.set_title('Implied Daily Expected Move', fontsize=18, color='white', pad=20, fontweight='bold')
+    ax.set_ylabel('Price', color='gray', fontsize=12)
+    ax.grid(True, color='#2A2A2A', linestyle=':')
+    ax.set_xticks([])
+    ax.legend(loc='upper left', facecolor='black', edgecolor='gray', fontsize=10)
+
+    props = dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.8, edgecolor='white', linewidth=1.5)
+    text_str = (
+        f"⚡ {iv_label}\n"
+        f"🎯 {spot_label}\n"
+        f"📏 Expected Move: ± {expected_move_points:,.1f} points\n"
+        f"---------------------------\n"
+        f"🟢 Safe Short Call Strike: > {upper_bound:,.0f}\n"
+        f"🔴 Safe Short Put Strike: < {lower_bound:,.0f}"
+    )
+    ax.text(0.02, 0.45, text_str, transform=ax.transAxes, fontsize=12,
+            verticalalignment='center', bbox=props, color='white', fontweight='bold')
     plt.tight_layout()
     return fig
 
 def plot_hurst():
     close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
-    log_p = np.log(close); hurst_series = log_p.rolling(60).apply(calculate_hurst_exponent)
-    df = pd.DataFrame({'Close':close,'Hurst':hurst_series}).dropna()
-    if df.empty: return None
-    current_hurst = df['Hurst'].iloc[-1]
-    if current_hurst>0.55: regime,color="Trending",'green'
-    elif current_hurst<0.45: regime,color="Mean Reverting",'red'
-    else: regime,color="Random Walk",'orange'
-    fig,(ax1,ax2)=plt.subplots(2,1,figsize=(12,7),gridspec_kw={'height_ratios':[2,1]})
-    ax1.plot(df.index,df['Close'],color='white'); ax1.set_title("Market Regime (Hurst Exponent)",fontweight='bold')
-    ax1.axvspan(df.index[-15],df.index[-1],color=color,alpha=0.1)
-    ax2.plot(df.index,df['Hurst'],color='cyan')
-    ax2.axhline(0.55,color='green',linestyle='--'); ax2.axhline(0.45,color='red',linestyle='--'); ax2.set_ylim(0.3,0.7)
-    props=dict(boxstyle='round',facecolor='black',edgecolor=color)
-    ax1.text(0.02,0.05,f"Hurst: {current_hurst:.3f}\nRegime: {regime}",transform=ax1.transAxes,bbox=props,fontsize=12)
-    plt.tight_layout(); return fig
+    log_prices = np.log(close)
+    hurst_series = log_prices.rolling(window=60).apply(calculate_hurst_exponent, raw=False)
+    df = pd.DataFrame({'Close': close, 'Hurst': hurst_series}).dropna()
+    if df.empty:
+        return None
+    current_price = float(df['Close'].iloc[-1])
+    current_hurst = float(df['Hurst'].iloc[-1])
+
+    if current_hurst < 0.45:
+        regime = "MEAN REVERTING"
+        stat_property = "Range-Bound Action / Volatility Compression"
+        color_theme = '#FF3333'
+    elif current_hurst > 0.55:
+        regime = "TRENDING"
+        stat_property = "Directional Movement / Momentum Expansion"
+        color_theme = '#00FF00'
+    else:
+        regime = "RANDOM WALK"
+        stat_property = "Unpredictable Noise / Transition Phase"
+        color_theme = '#FFA500'
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), dpi=120, gridspec_kw={'height_ratios': [1.5, 1]})
+    ax1.plot(df.index, df['Close'], color='white', linewidth=1.5, label='Price')
+    ax1.set_title('Market Regime (Hurst Exponent)', fontsize=18, color='white', pad=15, fontweight='bold')
+    ax1.set_ylabel('Price', color='gray')
+    ax1.grid(True, color='#2A2A2A', linestyle=':')
+    ax1.legend(loc='upper left', facecolor='black', edgecolor='gray')
+    ax1.axvspan(df.index[-15], df.index[-1], color=color_theme, alpha=0.1)
+
+    ax2.plot(df.index, df['Hurst'], color='#00FFFF', linewidth=2, label='60-Day Hurst Exponent')
+    ax2.axhline(0.55, color='#00FF00', linestyle='--', linewidth=1.5, label='Trending Threshold (>0.55)')
+    ax2.axhline(0.45, color='#FF3333', linestyle='--', linewidth=1.5, label='Mean Reverting Threshold (<0.45)')
+    ax2.axhline(0.50, color='gray', linestyle='-', linewidth=1, alpha=0.5)
+    ax2.fill_between(df.index, 0.55, df['Hurst'], where=(df['Hurst'] > 0.55), color='#00FF00', alpha=0.2, interpolate=True)
+    ax2.fill_between(df.index, 0.45, df['Hurst'], where=(df['Hurst'] < 0.45), color='#FF3333', alpha=0.2, interpolate=True)
+    ax2.set_ylabel('Hurst Value (H)', color='gray')
+    ax2.grid(True, color='#2A2A2A', linestyle=':')
+    ax2.set_ylim(0.3, 0.7)
+    ax2.legend(loc='upper right', facecolor='black', edgecolor='gray')
+
+    props = dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.9, edgecolor=color_theme, linewidth=1.5)
+    text_str = (
+        f"Current Price: {current_price:.2f}\n"
+        f"Hurst Exponent (H): {current_hurst:.3f}\n"
+        f"Regime: {regime}\n"
+        f"---------------------------\n"
+        f"Stat Property: {stat_property}"
+    )
+    ax1.text(0.02, 0.05, text_str, transform=ax1.transAxes, fontsize=12,
+            verticalalignment='bottom', bbox=props, color='white', fontweight='bold')
+    plt.tight_layout()
+    return fig
 
 def plot_ivr_ivp():
     if selected_market=="Crypto":
@@ -1218,7 +1279,7 @@ if active_tab == "📊 Dashboard & Analytics":
             elif module == "Expected Move":
                 fig = plot_expected_move()
                 if fig: st.pyplot(fig)
-                st.markdown("**What it indicates:** Shows the +/-1σ range for the next day, week, and month. Use these levels for strike selection and risk management.")
+                st.markdown("**What it indicates:** Shows the +/-1σ range for the next day. Use these levels for strike selection and risk management.")
             elif module == "Hurst Exponent":
                 fig = plot_hurst()
                 if fig: st.pyplot(fig)
