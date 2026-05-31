@@ -12,13 +12,6 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import yaml, logging, os, time, requests, re
 
-# Optional Telegram
-try:
-    from telegram import Bot
-    TELEGRAM_AVAILABLE = True
-except:
-    TELEGRAM_AVAILABLE = False
-
 # Optional ML
 try:
     from xgboost import XGBClassifier
@@ -82,8 +75,7 @@ if 'show_order_flow' not in st.session_state: st.session_state['show_order_flow'
 for key, default in [
     ('trade_journal', []), ('paper_balance', 100000),
     ('paper_positions', []), ('paper_trade_history', []),
-    ('auto_exit_enabled', True), ('ml_model_trained', False),
-    ('telegram_token', ''), ('telegram_chat_id', '')
+    ('auto_exit_enabled', True), ('ml_model_trained', False)
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -335,16 +327,6 @@ def predict_ml(model, current_price):
         return model.predict(features)[0]
     except: return None
 
-def send_telegram_alert(message):
-    token = st.session_state.get('telegram_token', '')
-    chat_id = st.session_state.get('telegram_chat_id', '')
-    if TELEGRAM_AVAILABLE and token and chat_id:
-        try:
-            bot = Bot(token=token)
-            bot.send_message(chat_id=chat_id, text=message)
-        except Exception as e:
-            logger.error(f"Telegram send failed: {e}")
-
 def check_auto_exit(pos, current_price, atr14):
     if not st.session_state.get('auto_exit_enabled',True): return False
     direction=pos['Direction']; entry=pos['Entry']
@@ -525,7 +507,7 @@ def get_ivr_label(ivr):
     else: return f"Mid IV (IVR {ivr:.0f}%) – Mixed, favour defined risk"
 
 # -----------------------------------------------------------------------------
-# ANALYTICS PLOT FUNCTIONS (unchanged, but complete)
+# ANALYTICS PLOT FUNCTIONS (all unchanged)
 # -----------------------------------------------------------------------------
 def plot_correlation():
     if 'correlation_data' not in st.session_state: return None
@@ -750,7 +732,7 @@ def plot_vrp():
     plt.tight_layout(); return fig
 
 # -----------------------------------------------------------------------------
-# NEW: LIVE ORDER FLOW (Binance)
+# LIVE ORDER FLOW (Binance)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=10, show_spinner=False)
 def fetch_binance_orderbook(symbol="BTCUSDT", limit=20):
@@ -770,7 +752,7 @@ def get_binance_symbol(ticker):
     return mapping.get(ticker, 'BTCUSDT')
 
 # -----------------------------------------------------------------------------
-# NEW: LIVE NIFTY/BANKNIFTY OPTIONS CHAIN
+# LIVE NIFTY/BANKNIFTY OPTIONS CHAIN
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_nse_options(index="^NSEI"):
@@ -883,7 +865,7 @@ def get_correlation_value():
     return val, status
 
 # -----------------------------------------------------------------------------
-# NEW: CORRELATION MATRIX
+# CORRELATION MATRIX
 # -----------------------------------------------------------------------------
 def plot_correlation_matrix(ticker_dict, selected_market):
     if not ticker_dict: return None
@@ -931,7 +913,7 @@ with toolbar_col5:
     ticker = TICKER_DICT[asset_choice]
 
 # -----------------------------------------------------------------------------
-# SIDEBAR
+# SIDEBAR (no Telegram)
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("## 🧬 AlphaQuant Terminal")
@@ -942,14 +924,6 @@ with st.sidebar:
                 close = hist_b['Close'].squeeze(); train_ml_model(close); st.success("ML model trained!")
     auto_exit = st.checkbox("🛑 Auto‑Exit (1.5x loss or 2σ move)", value=st.session_state['auto_exit_enabled'])
     if auto_exit != st.session_state['auto_exit_enabled']: st.session_state['auto_exit_enabled'] = auto_exit
-
-    with st.expander("📡 Telegram Alerts"):
-        token = st.text_input("Bot Token", value=st.session_state['telegram_token'], type="password")
-        chat_id = st.text_input("Chat ID", value=st.session_state['telegram_chat_id'])
-        if st.button("Save Telegram Settings"):
-            st.session_state['telegram_token'] = token
-            st.session_state['telegram_chat_id'] = chat_id
-            st.success("Settings saved!")
 
     st.markdown("---")
     tab = st.radio("📑 Navigate", [
@@ -1024,7 +998,6 @@ active_tab = st.session_state.get('active_tab', '📊 Dashboard & Analytics')
 if active_tab == "📊 Dashboard & Analytics":
     st.title("📊 Market Intelligence Dashboard")
 
-    # Market Overview card
     with st.container(border=True):
         st.markdown('<p class="section-header">🌍 Market Overview</p>', unsafe_allow_html=True)
         if selected_market == "Crypto":
@@ -1047,7 +1020,6 @@ if active_tab == "📊 Dashboard & Analytics":
                     st.markdown(f"""<div class="metric-card"><h3>📈 Sensex</h3><div class="value">{indian_data['sensex']:,.0f}</div><div class="delta">{indian_data['sensex_change']:+.2f}%</div></div>""", unsafe_allow_html=True)
             else: st.warning("Indian market summary not available.")
 
-    # Active Asset Detail card
     with st.container(border=True):
         st.markdown('<p class="section-header">🎯 Active Asset Details</p>', unsafe_allow_html=True)
         if asset_spot == 0:
@@ -1073,7 +1045,6 @@ if active_tab == "📊 Dashboard & Analytics":
             with st.expander("🎯 Allowed Strategies (Playbook)"):
                 for s in playbook_strategies:
                     st.write(f"- {s}")
-            # SAFE STRIKE ZONES (FIXED)
             if 'Exp. Move (D)' in quick_stats:
                 val = quick_stats['Exp. Move (D)']['value']
                 numeric_part = re.sub(r'[^\d\.\-]', '', val)
@@ -1086,7 +1057,7 @@ if active_tab == "📊 Dashboard & Analytics":
                     st.write(f"- Directional OTM strikes: {asset_spot-daily_move_val:,.0f} – {asset_spot+daily_move_val:,.0f}")
                     st.write(f"- Short gamma (sell OTM): {asset_spot-daily_move_val*1.5:,.0f} / {asset_spot+daily_move_val*1.5:,.0f}")
                 else:
-                    st.write("📏 Strike zones unavailable – expected move could not be calculated.")
+                    st.write("📏 Strike zones unavailable.")
             if max_pain:
                 distance_pct = abs(asset_spot - max_pain) / asset_spot * 100
                 if distance_pct < 1:
@@ -1107,7 +1078,7 @@ if active_tab == "📊 Dashboard & Analytics":
             max_risk_amount = st.session_state.paper_balance * max_risk_pct / 100
             st.write(f"💼 **Max risk per trade:** {currency}{max_risk_amount:,.0f} ({max_risk_pct}% of capital)")
 
-    # NEW: Order Flow Toggle (Crypto only)
+    # Order Flow (Crypto only)
     if selected_market == "Crypto":
         with st.expander("📈 Live Binance Order Flow (on‑demand)"):
             show_of = st.checkbox("Show Order Book", value=st.session_state['show_order_flow'])
@@ -1139,12 +1110,12 @@ if active_tab == "📊 Dashboard & Analytics":
                 else:
                     st.warning("Could not fetch Binance order book.")
 
-    # NEW: Correlation Matrix
+    # Correlation Matrix
     with st.expander("📊 Correlation Matrix (all assets)"):
         corr_fig = plot_correlation_matrix(TICKER_DICT, selected_market)
         if corr_fig: st.pyplot(corr_fig)
 
-    # NEW: Live Options Chain (India only)
+    # Live Options Chain (India only)
     if selected_market == "Indian Market" and ('Nifty' in asset_choice or 'Bank Nifty' in asset_choice):
         with st.expander("📋 Live Options Chain (NSE)"):
             spot_nse, opt_chain = fetch_nse_options(ticker)
@@ -1167,8 +1138,118 @@ if active_tab == "📊 Dashboard & Analytics":
             else:
                 st.warning("Could not fetch live options chain.")
 
-    # Quick Analytics, Market Summary, Detailed Chart – unchanged
-    # ... (keep all the existing sections from earlier version)
+    # Quick Analytics Overview
+    with st.container(border=True):
+        st.markdown('<p class="section-header">⚡ Quick Analytics Overview</p>', unsafe_allow_html=True)
+        n_cols = 4
+        keys = list(quick_stats.keys())
+        for i in range(0, len(keys), n_cols):
+            cols = st.columns(n_cols)
+            for j in range(n_cols):
+                idx = i+j
+                if idx < len(keys):
+                    key = keys[idx]; stat = quick_stats[key]
+                    with cols[j]:
+                        st.markdown(f"""<div class="quick-stat"><strong>{key}</strong><br><span style="font-size:1.2rem;">{stat['value']}</span><br><small>{stat['status']}</small></div>""", unsafe_allow_html=True)
+                        if st.button("🔍", key=f"btn_{key}", help="View detailed chart"):
+                            st.session_state['selected_analysis'] = stat['module']; st.rerun()
+
+    # Market Status – Plain English
+    with st.container(border=True):
+        st.markdown('<p class="section-header">🧠 Market Status – Plain English</p>', unsafe_allow_html=True)
+        with st.container():
+            st.markdown('<div class="market-summary">', unsafe_allow_html=True)
+            summary_lines = []
+            if 'Liq. Sweep' in quick_stats:
+                sweep = quick_stats['Liq. Sweep']['value']
+                if 'Supply' in sweep: summary_lines.append("**Intraday** – 🔻 Supply swept: sellers absorbed, bearish pressure. Keep stops tight.")
+                elif 'Demand' in sweep: summary_lines.append("**Intraday** – 🔺 Demand swept: buyers absorbed, bullish pressure. Look for long scalps.")
+                else: summary_lines.append("**Intraday** – 🔹 No clear sweep; price in discovery. Wait for structural break.")
+            if intraday_move:
+                summary_lines.append(f"**Intraday** – 📏 Intraday range ±{currency}{intraday_move:,.0f}. Scalp inside, swing if break.")
+            if 'Hurst' in quick_stats:
+                h_str = quick_stats['Hurst']['value']
+                try:
+                    h = float(h_str)
+                    if h > 0.55: summary_lines.append(f"**Swing (2–5d)** – 🚀 Hurst {h:.3f} trending; use pullback entries, trailing stops.")
+                    elif h < 0.45: summary_lines.append(f"**Swing (2–5d)** – 🔄 Hurst {h:.3f} mean‑reverting; fade breakouts, take profits at mean.")
+                    else: summary_lines.append(f"**Swing (2–5d)** – ⚪ Hurst {h:.3f} random; avoid aggressive directional bets.")
+                except: summary_lines.append("**Swing (2–5d)** – ⚪ Hurst unavailable; trend signals muted.")
+            if 'Correlation' in quick_stats:
+                try:
+                    corr = float(quick_stats['Correlation']['value'])
+                    if corr > 0.8: summary_lines.append("**Swing (2–5d)** – 📈 High correlation; positions move together, reduce correlated risk.")
+                    elif corr < 0.5: summary_lines.append("**Swing (2–5d)** – ⚠️ Decoupling; favor pair trades or neutral strategies.")
+                except: pass
+            if 'IVR/IVP' in quick_stats:
+                ivr_status = quick_stats['IVR/IVP']['status']
+                summary_lines.append(f"**Positional (2–4w)** – 🎯 {ivr_status}")
+            if 'Exp. Move (D)' in quick_stats:
+                move_str = quick_stats['Exp. Move (D)']['value']
+                summary_lines.append(f"**Positional (2–4w)** – 📏 Daily expected move: {move_str}. Use for strike selection.")
+            if 'Parkinson' in quick_stats and quick_stats['Parkinson']['value'] != "N/A":
+                try:
+                    park_val = float(quick_stats['Parkinson']['value'].replace('%',''))
+                    if park_val > garch_vol_asset:
+                        summary_lines.append(f"**Positional (2–4w)** – 📊 Parkinson vol {park_val:.1f}% > GARCH; large intraday swings. Reduce size, widen stops.")
+                except: pass
+            if summary_lines:
+                for line in summary_lines:
+                    st.markdown(line)
+            else:
+                st.info("Gathering market data...")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    # Detailed Chart Section
+    with st.container(border=True):
+        st.markdown('<p class="section-header">📈 Detailed Analysis</p>', unsafe_allow_html=True)
+        module_names = ["Correlation","Expected Move","Hurst Exponent","IV Rank & IV Percentile",
+                        "Liquidity Detector","Open Interest Profile","Parkinson Estimator",
+                        "Volatility Cone","Volatility Risk Premium (VRP)"]
+        current_idx = module_names.index(st.session_state['selected_analysis']) if st.session_state['selected_analysis'] in module_names else 0
+        module = st.selectbox("Select Analysis", module_names, index=current_idx)
+        if module != st.session_state['selected_analysis']:
+            st.session_state['selected_analysis'] = module; st.rerun()
+        with st.spinner(f"Generating {module}..."):
+            if module == "Correlation":
+                fig = plot_correlation()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** When correlation drops below 0.5, markets are decoupling → sector rotation or stress.")
+            elif module == "Expected Move":
+                fig = plot_expected_move()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** Shows the +/-1σ range for the next day, week, and month. Use these levels for strike selection and risk management.")
+            elif module == "Hurst Exponent":
+                fig = plot_hurst()
+                if fig: st.pyplot(fig)
+                else: st.warning("Insufficient data for Hurst calculation.")
+                st.markdown("**What it indicates:** H > 0.55 = trending, H < 0.45 = mean‑reverting.")
+            elif module == "IV Rank & IV Percentile":
+                fig = plot_ivr_ivp()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** IVR > 50 = sell premium, IVR < 50 = buy premium.")
+            elif module == "Liquidity Detector":
+                fig = plot_liquidity_sweep()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** Sweeps show where institutions absorbed liquidity. Supply sweep = bearish, Demand sweep = bullish.")
+            elif module == "Open Interest Profile":
+                fig = plot_oi_profile()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** Simulated OI profile – not real data. For demonstration only.")
+            elif module == "Parkinson Estimator":
+                fig_park, park_val = plot_parkinson()
+                if fig_park:
+                    st.pyplot(fig_park)
+                    st.markdown(f"**Current Parkinson Vol:** {park_val:.1f}% — High values relative to GARCH indicate large intraday swings; adjust stops accordingly.")
+                else: st.warning("Parkinson volatility could not be calculated.")
+            elif module == "Volatility Cone":
+                fig = plot_volatility_cone()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** Where current vol sits inside the cone helps assess if options are historically cheap or expensive.")
+            elif module == "Volatility Risk Premium (VRP)":
+                fig = plot_vrp()
+                if fig: st.pyplot(fig)
+                st.markdown("**What it indicates:** Positive VRP = implied > actual (sell premium). Negative VRP = actual > implied (buy premium).")
 
 elif active_tab == "📄 Paper Trading":
     st.title("📄 Paper Trading")
@@ -1256,7 +1337,6 @@ elif active_tab == "🧙 Strategy Wizard":
                     'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 })
                 st.success(f"Opened {direction} {qty:.4f} {asset_choice} @ {currency}{asset_spot:,.2f}")
-                send_telegram_alert(f"Wizard opened {direction} {qty:.4f} {asset_choice} @ {currency}{asset_spot:,.2f}")
             else:
                 st.error("Insufficient balance.")
     else:
