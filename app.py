@@ -90,7 +90,7 @@ plt.style.use('dark_background')
 logging.basicConfig(level=logging.INFO); logger=logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
-# ALL HELPER FUNCTIONS
+# ALL HELPER FUNCTIONS (complete)
 # -----------------------------------------------------------------------------
 def yf_download_retry(*args, max_retries=3, **kwargs):
     for attempt in range(max_retries):
@@ -117,11 +117,11 @@ def calculate_hurst_exponent(ts):
     except: return np.nan
 
 def get_asset_step(spot_price):
-    if spot_price>50000: return 2000
-    elif spot_price>10000: return 500
-    elif spot_price>1000: return 50
-    elif spot_price>100: return 10
-    else: return 1
+    if spot_price>50000: return 2000.0
+    elif spot_price>10000: return 500.0
+    elif spot_price>1000: return 50.0
+    elif spot_price>100: return 10.0
+    else: return 1.0
 
 def calculate_parkinson_volatility(high_px,low_px,periods_per_year=252):
     if len(high_px)!=len(low_px) or len(high_px)<2: return 0.0
@@ -947,7 +947,7 @@ def get_correlation_value():
     return val, status
 
 # -----------------------------------------------------------------------------
-# COMPACT TOOLBAR
+# COMPACT TOOLBAR (unchanged)
 # -----------------------------------------------------------------------------
 toolbar_col1, toolbar_col2, toolbar_col3, toolbar_col4, toolbar_col5 = st.columns([2, 1, 1, 1, 2])
 with toolbar_col1:
@@ -976,7 +976,7 @@ with toolbar_col5:
     ticker = TICKER_DICT[asset_choice]
 
 # -----------------------------------------------------------------------------
-# SIDEBAR
+# SIDEBAR (unchanged)
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("## 🧬 AlphaQuant Terminal")
@@ -1009,7 +1009,7 @@ with st.sidebar:
     st.session_state.active_tab = tab
 
 # -----------------------------------------------------------------------------
-# INITIAL DATA LOADING
+# INITIAL DATA LOADING (unchanged)
 # -----------------------------------------------------------------------------
 current_keys = set(TICKER_DICT.keys())
 if 'long_hist_data' not in st.session_state or set(st.session_state['long_hist_data'].keys()) != current_keys:
@@ -1065,7 +1065,7 @@ trade_bias_label = get_trade_bias(garch_vol_asset, ivr_val, corr_val)
 playbook_strategies = get_playbook(garch_vol_asset, ivr_val, corr_val)
 
 # -----------------------------------------------------------------------------
-# FULL DASHBOARD (with all new features integrated)
+# FULL DASHBOARD (complete)
 # -----------------------------------------------------------------------------
 active_tab = st.session_state.get('active_tab', '📊 Dashboard & Analytics')
 
@@ -1154,7 +1154,7 @@ if active_tab == "📊 Dashboard & Analytics":
             max_risk_amount = st.session_state.paper_balance * max_risk_pct / 100
             st.write(f"💼 **Max risk per trade:** {currency}{max_risk_amount:,.0f} ({max_risk_pct}% of capital)")
 
-    # Indian Market Real‑Time Greeks
+    # Indian Greeks
     if selected_market == "Indian Market" and ('Nifty' in asset_choice or 'Bank Nifty' in asset_choice):
         with st.expander("📐 Real‑Time Option Greeks (ATM)"):
             vix_data = get_india_vix("5d")
@@ -1183,11 +1183,11 @@ if active_tab == "📊 Dashboard & Analytics":
                     st.write(f"Theta: {put['theta']:.3f}")
                     st.write(f"Vega: {put['vega']:.3f}")
                     st.write(f"Price: {put['price']:.2f}")
-                st.caption("**Greeks Impact:** High IV → options expensive, favour selling. Low IV → buy options. Delta near 0.5 for ATM calls, -0.5 for puts. Theta accelerates near expiry.")
+                st.caption("**Greeks Impact:** High IV → options expensive, favour selling. Low IV → buy options.")
             else:
                 st.warning("VIX data not available for Greeks.")
 
-    # Live Terminal Section
+    # Live Terminal
     with st.expander("💹 Live Terminal (Chart, Order Book, Quick Trade)", expanded=False):
         st.caption("Real‑time price chart, order book, and quick paper trade panel.")
         if st.button("🔄 Refresh Live Data"):
@@ -1290,7 +1290,7 @@ if active_tab == "📊 Dashboard & Analytics":
         for i in range(num_legs):
             col1, col2, col3, col4 = st.columns(4)
             with col1: leg_type = st.selectbox(f"Leg {i+1} Type", ["Long Call","Short Call","Long Put","Short Put"], key=f"ptype_{i}")
-            with col2: strike = st.number_input(f"Strike {i+1}", value=asset_spot, step=get_asset_step(asset_spot), key=f"pstrike_{i}")
+            with col2: strike = st.number_input(f"Strike {i+1}", value=float(asset_spot), step=float(get_asset_step(asset_spot)), key=f"pstrike_{i}")
             with col3: premium = st.number_input(f"Premium {i+1}", value=5.0, step=0.5, key=f"pprem_{i}")
             with col4: quantity = st.number_input(f"Qty {i+1}", value=1, step=1, key=f"pqty_{i}")
             legs_data.append((leg_type, strike, premium, quantity))
@@ -1440,11 +1440,11 @@ if active_tab == "📊 Dashboard & Analytics":
             if module == "Correlation":
                 fig = plot_correlation()
                 if fig: st.pyplot(fig)
-                st.markdown("**What it indicates:** When correlation drops below 0.5, markets are decoupling → sector rotation or stress.")
+                st.markdown("**What it indicates:** When correlation drops below 0.5, markets are decoupling.")
             elif module == "Expected Move":
                 fig = plot_expected_move()
                 if fig: st.pyplot(fig)
-                st.markdown("**What it indicates:** Shows the +/-1σ range for the next day. Use these levels for strike selection and risk management.")
+                st.markdown("**What it indicates:** Shows the +/-1σ range for the next day.")
             elif module == "Hurst Exponent":
                 fig = plot_hurst()
                 if fig: st.pyplot(fig)
@@ -1457,25 +1457,25 @@ if active_tab == "📊 Dashboard & Analytics":
             elif module == "Liquidity Detector":
                 fig = plot_liquidity_sweep()
                 if fig: st.pyplot(fig)
-                st.markdown("**What it indicates:** Sweeps show where institutions absorbed liquidity. Supply sweep = bearish, Demand sweep = bullish.")
+                st.markdown("**What it indicates:** Sweeps show where institutions absorbed liquidity.")
             elif module == "Open Interest Profile":
                 fig = plot_oi_profile()
                 if fig: st.pyplot(fig)
-                st.markdown("**What it indicates:** Simulated OI profile – not real data. For demonstration only.")
+                st.markdown("**What it indicates:** Simulated OI profile – not real data.")
             elif module == "Parkinson Estimator":
                 fig_park, park_val = plot_parkinson()
                 if fig_park:
                     st.pyplot(fig_park)
-                    st.markdown(f"**Current Parkinson Vol:** {park_val:.1f}% — High values relative to GARCH indicate large intraday swings; adjust stops accordingly.")
+                    st.markdown(f"**Current Parkinson Vol:** {park_val:.1f}%")
                 else: st.warning("Parkinson volatility could not be calculated.")
             elif module == "Volatility Cone":
                 fig = plot_volatility_cone()
                 if fig: st.pyplot(fig)
-                st.markdown("**What it indicates:** Where current vol sits inside the cone helps assess if options are historically cheap or expensive.")
+                st.markdown("**What it indicates:** Where current vol sits inside the cone.")
             elif module == "Volatility Risk Premium (VRP)":
                 fig = plot_vrp()
                 if fig: st.pyplot(fig)
-                st.markdown("**What it indicates:** Positive VRP = implied > actual (sell premium). Negative VRP = actual > implied (buy premium).")
+                st.markdown("**What it indicates:** Positive VRP = implied > actual (sell premium).")
 
 elif active_tab == "📄 Paper Trading":
     st.title("📄 Paper Trading")
