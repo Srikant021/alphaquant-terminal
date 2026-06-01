@@ -1,4 +1,5 @@
 # AlphaQuant Terminal — Full Code, No pandas_ta, Fyers GUI, Expected Moves, Deep Explanations
+# Removed Quick Trade (Paper) section
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -37,7 +38,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Session state defaults
+# Session state defaults (paper_balance and paper_positions kept but not used)
 for key, default in [
     ('live_mode', False), ('refresh_interval', 120), ('selected_market', 'Crypto'),
     ('paper_balance', 100000), ('paper_positions', []), ('auto_exit_enabled', True),
@@ -368,25 +369,6 @@ for i, (label, value, sub) in enumerate(metrics):
             <div class="sub">{sub}</div>
         </div>''', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
-
-# ───── QUICK TRADE ─────
-with st.expander("⚡ Quick Trade (Paper)", expanded=False):
-    c1,c2,c3 = st.columns(3)
-    dir = c1.selectbox("Direction", ["Long","Short"])
-    qty = c2.number_input("Qty", min_value=0.01, value=0.01, step=0.01)
-    price = c3.number_input("Price", value=asset_spot)
-    if st.button("Place Order"):
-        cost = qty * price
-        if cost > st.session_state['paper_balance']:
-            st.error("Insufficient balance")
-        else:
-            st.session_state['paper_balance'] -= cost
-            st.session_state['paper_positions'].append({
-                'Asset':asset_choice,'Direction':dir,'Qty':qty,'Entry':price,
-                'Type':'Spot','Timestamp':datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            })
-            st.success(f"{dir} {qty} {asset_choice} @ {currency}{price:,.2f}")
-            st.rerun()
 
 # ───── ANALYSIS MODULES (with deep explanations) ─────
 analysis_modules = [
