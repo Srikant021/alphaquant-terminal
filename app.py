@@ -1,4 +1,4 @@
-# AlphaQuant Terminal — Fyers‑Inspired GUI, No External TA Library
+# AlphaQuant Terminal — Fyers GUI, No External TA, Advanced Charts & Deep Explanations
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -22,17 +22,14 @@ except:
 st.set_page_config(page_title="AlphaQuant Terminal", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
 <style>
-    /* Fyers‑like theme: dark background, blue accents, clean typography */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     html, body, .stApp { font-family: 'Inter', sans-serif; background: #0E1117; color: #E0E0E0; }
-    /* Top header bar */
     .header-bar {
         background: #1A1D24; padding: 10px 20px; border-bottom: 1px solid #2A2E39;
         display: flex; justify-content: space-between; align-items: center;
     }
     .market-index { font-size: 0.9rem; color: #A0A7B8; margin-right: 20px; }
     .market-index span { font-weight: 600; color: #FFFFFF; }
-    /* Sidebar */
     [data-testid="stSidebar"] {
         background: #13161C; border-right: 1px solid #2A2E39;
     }
@@ -46,12 +43,10 @@ st.markdown("""
     .watchlist-item .change { font-size: 0.8rem; }
     .positive { color: #00C48C; }
     .negative { color: #FF4D4D; }
-    /* Main chart area */
     .chart-container {
         background: #13161C; border: 1px solid #2A2E39; border-radius: 8px;
         padding: 10px; margin-bottom: 15px;
     }
-    /* Metric cards row */
     .metric-row {
         display: flex; gap: 10px; margin: 15px 0; flex-wrap: wrap;
     }
@@ -62,17 +57,14 @@ st.markdown("""
     .metric-card .label { font-size: 0.75rem; color: #A0A7B8; margin-bottom: 4px; }
     .metric-card .value { font-size: 1.3rem; font-weight: 700; color: #FFFFFF; }
     .metric-card .sub { font-size: 0.8rem; color: #7A8296; }
-    /* Buttons */
     .stButton>button {
         background: #2A3A5C; color: white; border: none; border-radius: 4px;
         font-weight: 500; transition: background 0.2s;
     }
     .stButton>button:hover { background: #3A4D7A; }
-    /* Expandable sections */
     .streamlit-expanderHeader {
         background: #1A1D24; border-radius: 6px; border: 1px solid #2A2E39;
     }
-    /* Scrollbar */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: #13161C; }
     ::-webkit-scrollbar-thumb { background: #2A2E39; border-radius: 3px; }
@@ -123,36 +115,12 @@ def compute_rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def compute_macd(series, fast=12, slow=26, signal=9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    histogram = macd_line - signal_line
-    return macd_line, signal_line, histogram
-
 def compute_bbands(series, period=20, std=2):
     sma = series.rolling(window=period).mean()
     rolling_std = series.rolling(window=period).std()
     upper = sma + (rolling_std * std)
     lower = sma - (rolling_std * std)
     return upper, sma, lower
-
-# ───── DATA UTILITIES (unchanged) ─────
-def yf_download_retry(*args, max_retries=3, **kwargs):
-    for attempt in range(max_retries):
-        try:
-            data = yf.download(*args, progress=False, **kwargs)
-            if data is not None and not data.empty:
-                return data
-        except: pass
-        time.sleep(2**attempt)
-    return pd.DataFrame()
-
-def flatten_df(df_raw):
-    if isinstance(df_raw.columns, pd.MultiIndex):
-        df=df_raw.copy(); df.columns=df_raw.columns.get_level_values(0); return df
-    return df_raw
 
 def calculate_hurst_exponent(ts):
     if len(ts) < 20: return np.nan
@@ -179,6 +147,63 @@ def calculate_iv_rank_percentile(close_px,window=20):
     ivp=(rolling_vol<cur_vol).sum()/len(rolling_vol)*100
     return ivr,ivp
 
+# ───── DATA UTILITIES ─────
+def yf_download_retry(*args, max_retries=3, **kwargs):
+    for attempt in range(max_retries):
+        try:
+            data = yf.download(*args, progress=False, **kwargs)
+            if data is not None and not data.empty:
+                return data
+        except: pass
+        time.sleep(2**attempt)
+    return pd.DataFrame()
+
+def flatten_df(df_raw):
+    if isinstance(df_raw.columns, pd.MultiIndex):
+        df=df_raw.copy(); df.columns=df_raw.columns.get_level_values(0); return df
+    return df_raw
+
+@st.cache_data(ttl=CACHE_TTL['long_hist'], show_spinner=False)
+def fetch_long_hist(ticker_dict):
+    bundle={}
+    for name,ticker in ticker_dict.items():
+        raw=yf_download_retry(ticker, period="2y")
+        if not raw.empty: bundle[name]=flatten_df(raw)
+    return bundle
+
+@st.cache_data(ttl=CACHE_TTL['live_price'], show_spinner=False)
+def live_price(ticker):
+    raw=yf_download_retry(ticker, period="2d")
+    if raw.empty: return None
+    df=flatten_df(raw)
+    if len(df)<2: return None
+    last=float(df['Close'].iloc[-1]); prev=float(df['Close'].iloc[-2])
+    chg=last-prev; pct=(chg/prev)*100 if prev else 0
+    return {'spot':last,'prev_close':prev,'change':chg,'pct':pct,'ts':datetime.now().strftime('%H:%M:%S')}
+
+@st.cache_data(ttl=CACHE_TTL['garch'])
+def garch_both(ticker):
+    df=yf_download_retry(ticker, period="1y", interval="1d")
+    if df.empty: return 80, 80
+    close=df['Close'].squeeze()
+    ret=100*close.pct_change().dropna()
+    if len(ret)<100: return 80, 80
+    try:
+        m1 = arch_model(ret, vol='GARCH', p=1, q=1, rescale=True).fit(disp='off')
+        vol1 = np.sqrt(m1.forecast(horizon=1).variance.iloc[-1].values[0])*np.sqrt(252)
+    except: vol1 = 80
+    try:
+        m2 = arch_model(ret, vol='GARCH', p=1, o=1, q=1, rescale=True).fit(disp='off')
+        vol2 = np.sqrt(m2.forecast(horizon=1).variance.iloc[-1].values[0])*np.sqrt(252)
+    except: vol2 = 80
+    return vol1, vol2
+
+@st.cache_data(ttl=300)
+def get_india_vix(period="5d"):
+    v = yf_download_retry("^INDIAVIX", period=period)['Close'].squeeze()
+    if v.empty: return None
+    return v
+
 @st.cache_data(ttl=300)
 def fetch_deribit_option_chain(coin="BTC"):
     base="https://www.deribit.com/api/v2/public/"
@@ -204,104 +229,12 @@ def fetch_deribit_option_chain(coin="BTC"):
         return pd.DataFrame(option_data)
     except: return None
 
-@st.cache_data(ttl=300)
-def fetch_binance_funding_rate(symbol="BTCUSDT"):
-    try:
-        r=requests.get("https://fapi.binance.com/fapi/v1/premiumIndex",params={"symbol":symbol},timeout=5)
-        if r.status_code==200:
-            data=r.json(); return float(data['lastFundingRate'])*100
-    except: pass
-    return None
-
-@st.cache_data(ttl=CACHE_TTL['long_hist'], show_spinner=False)
-def fetch_long_hist(ticker_dict):
-    bundle={}
-    for name,ticker in ticker_dict.items():
-        raw=yf_download_retry(ticker, period="2y")
-        if not raw.empty: bundle[name]=flatten_df(raw)
-    return bundle
-
-@st.cache_data(ttl=120, show_spinner=False)
-def fetch_top_prices():
-    try:
-        data = yf.download(['BTC-USD','ETH-USD'], period="2d", progress=False)
-        if not data.empty:
-            close = flatten_df(data)['Close']
-            btc = float(close['BTC-USD'].iloc[-1]); btc_p = float(close['BTC-USD'].iloc[-2])
-            eth = float(close['ETH-USD'].iloc[-1]); eth_p = float(close['ETH-USD'].iloc[-2])
-            hist_btc = yf.download('BTC-USD', period="1mo", progress=False)
-            hist_eth = yf.download('ETH-USD', period="1mo", progress=False)
-            vol_btc = np.log(hist_btc['Close']/hist_btc['Close'].shift(1)).std()*np.sqrt(365)*100 if not hist_btc.empty else 65
-            vol_eth = np.log(hist_eth['Close']/hist_eth['Close'].shift(1)).std()*np.sqrt(365)*100 if not hist_eth.empty else 65
-            mkt_vol = (vol_btc+vol_eth)/2 if not np.isnan(vol_btc) and not np.isnan(vol_eth) else 65
-            return {'btc':btc,'btc_change':btc-btc_p,'btc_pct':((btc-btc_p)/btc_p)*100,
-                    'eth':eth,'eth_change':eth-eth_p,'eth_pct':((eth-eth_p)/eth_p)*100 if eth_p else 0,
-                    'market_vol':mkt_vol,'timestamp':datetime.now().strftime('%H:%M:%S')}
-    except: pass
-    return None
-
-@st.cache_data(ttl=120, show_spinner=False)
-def fetch_indian_market_summary():
-    try:
-        nifty = yf.download('^NSEI', period="2d", progress=False)
-        sensex = yf.download('^BSESN', period="2d", progress=False)
-        if nifty.empty or sensex.empty: return None
-        nifty_close = nifty['Close'].squeeze(); sensex_close = sensex['Close'].squeeze()
-        nifty_val = float(nifty_close.iloc[-1]); nifty_prev = float(nifty_close.iloc[-2])
-        sensex_val = float(sensex_close.iloc[-1]); sensex_prev = float(sensex_close.iloc[-2])
-        return {'nifty':nifty_val,'nifty_change':((nifty_val-nifty_prev)/nifty_prev)*100,
-                'sensex':sensex_val,'sensex_change':((sensex_val-sensex_prev)/sensex_prev)*100,
-                'timestamp':datetime.now().strftime('%H:%M:%S')}
-    except: return None
-
-@st.cache_data(ttl=CACHE_TTL['intraday'], show_spinner=False)
-def fetch_intraday(ticker,interval="15m"):
-    raw=yf_download_retry(ticker, period="5d", interval=interval)
-    if raw.empty: return None
-    df=flatten_df(raw)
-    if not all(c in df.columns for c in ['Open','High','Low','Close']): return None
-    return df
-
-@st.cache_data(ttl=CACHE_TTL['garch'])
-def garch_both(ticker):
-    df=yf_download_retry(ticker, period="1y", interval="1d")
-    if df.empty: return 80, 80
-    close=df['Close'].squeeze()
-    ret=100*close.pct_change().dropna()
-    if len(ret)<100: return 80, 80
-    try:
-        m1 = arch_model(ret, vol='GARCH', p=1, q=1, rescale=True).fit(disp='off')
-        vol1 = np.sqrt(m1.forecast(horizon=1).variance.iloc[-1].values[0])*np.sqrt(252)
-    except: vol1 = 80
-    try:
-        m2 = arch_model(ret, vol='GARCH', p=1, o=1, q=1, rescale=True).fit(disp='off')
-        vol2 = np.sqrt(m2.forecast(horizon=1).variance.iloc[-1].values[0])*np.sqrt(252)
-    except: vol2 = 80
-    return vol1, vol2
-
-@st.cache_data(ttl=CACHE_TTL['live_price'], show_spinner=False)
-def live_price(ticker):
-    raw=yf_download_retry(ticker, period="2d")
-    if raw.empty: return None
-    df=flatten_df(raw)
-    if len(df)<2: return None
-    last=float(df['Close'].iloc[-1]); prev=float(df['Close'].iloc[-2])
-    chg=last-prev; pct=(chg/prev)*100 if prev else 0
-    return {'spot':last,'prev_close':prev,'change':chg,'pct':pct,'ts':datetime.now().strftime('%H:%M:%S')}
-
-@st.cache_data(ttl=300)
-def get_india_vix(period="5d"):
-    v = yf_download_retry("^INDIAVIX", period=period)['Close'].squeeze()
-    if v.empty: return None
-    return v
-
-# ───── LAYOUT: HEADER BAR ─────
+# ───── HEADER BAR ─────
 st.markdown('<div class="header-bar">', unsafe_allow_html=True)
 col1, col2, col3, col4 = st.columns([2,2,1,1])
 with col1:
     market_type = st.radio("Market", ["Crypto","Indian"], horizontal=True, label_visibility="collapsed")
-    if market_type == "Crypto": selected_market = "Crypto"
-    else: selected_market = "Indian Market"
+    selected_market = "Crypto" if market_type == "Crypto" else "Indian Market"
 with col2:
     if selected_market == "Crypto":
         ticker_dict = CONFIG['cryptos']; trading_days=365; currency="$"
@@ -310,21 +243,20 @@ with col2:
     asset_choice = st.selectbox("Asset", list(ticker_dict.keys()), label_visibility="collapsed")
     ticker = ticker_dict[asset_choice]
 with col3:
-    live_mode = st.checkbox("Live", value=st.session_state['live_mode'])
-    if live_mode != st.session_state['live_mode']: st.session_state['live_mode'] = live_mode
+    st.session_state['live_mode'] = st.checkbox("Live", value=st.session_state['live_mode'])
 with col4:
     if st.button("Refresh", key="refresh_header"):
         st.cache_data.clear()
         st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
 
-# ───── SIDEBAR: WATCHLIST ─────
+# ───── SIDEBAR WATCHLIST ─────
 with st.sidebar:
     st.markdown("### Watchlist")
     for name, tkr in ticker_dict.items():
         live = live_price(tkr)
         if live:
-            spot = live['spot']; chg = live['change']
+            spot, chg = live['spot'], live['change']
             col1, col2 = st.columns([3,1])
             col1.markdown(f"**{name}**  {currency}{spot:,.2f}")
             delta_class = "positive" if chg >=0 else "negative"
@@ -332,16 +264,15 @@ with st.sidebar:
         else:
             st.text(f"{name} --")
     st.markdown("---")
-    if ML_AVAILABLE:
-        if st.button("Train ML Model"):
-            hist = st.session_state.get('long_hist_data',{}).get(asset_choice)
-            if hist is not None:
-                close = hist['Close'].squeeze(); train_ml_model(close); st.success("Model trained!")
-    st.session_state['auto_exit_enabled'] = st.checkbox("Auto Exit (1.5x ATR)", value=st.session_state['auto_exit_enabled'])
+    if ML_AVAILABLE and st.button("Train ML Model"):
+        hist = st.session_state.get('long_hist_data',{}).get(asset_choice)
+        if hist is not None:
+            close = hist['Close'].squeeze(); train_ml_model(close); st.success("Model trained!")
 
-# ───── DATA LOADING ─────
+# ───── LOAD HISTORICAL DATA ─────
 if 'long_hist_data' not in st.session_state or asset_choice not in st.session_state.get('long_hist_data', {}):
     st.session_state['long_hist_data'] = fetch_long_hist(ticker_dict)
+
 lp = live_price(ticker)
 if lp is None:
     hist = st.session_state['long_hist_data'].get(asset_choice)
@@ -352,6 +283,7 @@ if lp is None:
     else: lp = {'spot':0,'prev_close':0,'change':0,'pct':0,'ts':'unavailable'}
 asset_spot = lp['spot']
 garch_vol, gjrgarch_vol = garch_both(ticker)
+
 park_vol = None; ivr_val = ivp_val = None
 if asset_choice in st.session_state['long_hist_data']:
     df = st.session_state['long_hist_data'][asset_choice]
@@ -360,33 +292,85 @@ if asset_choice in st.session_state['long_hist_data']:
         park_vol = calculate_parkinson_volatility(high,low,periods_per_year=trading_days)
         ivr_val, ivp_val = calculate_iv_rank_percentile(close)
 
-# ───── MAIN CHART PANEL ─────
+# ───── MAIN CHART (advanced, no MACD/RSI, daily+weekly moves) ─────
 st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-with st.spinner("Loading chart..."):
-    df_ta = yf_download_retry(ticker, period="6mo", interval="1d")
-    if not df_ta.empty:
-        df_ta = flatten_df(df_ta)
-        df_ta['RSI'] = compute_rsi(df_ta['Close'])
-        macd, signal, hist = compute_macd(df_ta['Close'])
-        df_ta['MACD'] = macd; df_ta['Signal'] = signal; df_ta['Histogram'] = hist
-        bb_upper, bb_mid, bb_lower = compute_bbands(df_ta['Close'])
-        fig_ta = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.6,0.2,0.2],
-                               vertical_spacing=0.02, subplot_titles=("Price","RSI","MACD"))
-        fig_ta.add_trace(go.Candlestick(x=df_ta.index, open=df_ta['Open'], high=df_ta['High'],
-                                        low=df_ta['Low'], close=df_ta['Close'], name='Price'), row=1, col=1)
-        fig_ta.add_trace(go.Scatter(x=df_ta.index, y=bb_upper, line=dict(color='gray',width=1), name='Upper'), row=1, col=1)
-        fig_ta.add_trace(go.Scatter(x=df_ta.index, y=bb_lower, line=dict(color='gray',width=1), name='Lower'), row=1, col=1)
-        fig_ta.add_trace(go.Scatter(x=df_ta.index, y=df_ta['RSI'], line=dict(color='purple'), name='RSI'), row=2, col=1)
-        fig_ta.add_hline(y=70, line_dash="dot", line_color="red", row=2, col=1)
-        fig_ta.add_hline(y=30, line_dash="dot", line_color="green", row=2, col=1)
-        fig_ta.add_trace(go.Scatter(x=df_ta.index, y=df_ta['MACD'], line=dict(color='cyan'), name='MACD'), row=3, col=1)
-        fig_ta.add_trace(go.Scatter(x=df_ta.index, y=df_ta['Signal'], line=dict(color='orange'), name='Signal'), row=3, col=1)
-        fig_ta.add_trace(go.Bar(x=df_ta.index, y=df_ta['Histogram'], marker_color='gray', name='Histogram'), row=3, col=1)
-        fig_ta.update_layout(template='plotly_dark', height=600, showlegend=False, xaxis_rangeslider_visible=False)
-        st.plotly_chart(fig_ta, use_container_width=True)
+with st.spinner("Rendering advanced chart..."):
+    df_chart = yf_download_retry(ticker, period="6mo", interval="1d")
+    if not df_chart.empty:
+        df_chart = flatten_df(df_chart)
+        # Bollinger Bands
+        bb_upper, bb_mid, bb_lower = compute_bbands(df_chart['Close'])
+        # Daily and weekly expected moves
+        iv_est = garch_vol / 100
+        daily_move = asset_spot * iv_est * np.sqrt(1/trading_days)
+        weekly_move = asset_spot * iv_est * np.sqrt(7/trading_days)   # assuming 7 calendar days
+        upper_d = asset_spot + daily_move
+        lower_d = asset_spot - daily_move
+        upper_w = asset_spot + weekly_move
+        lower_w = asset_spot - weekly_move
+
+        fig_main = make_subplots(specs=[[{"secondary_y": False}]])
+        # Candlestick
+        fig_main.add_trace(go.Candlestick(
+            x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
+            low=df_chart['Low'], close=df_chart['Close'], name='Price'
+        ))
+        # Bollinger Bands
+        fig_main.add_trace(go.Scatter(
+            x=df_chart.index, y=bb_upper, line=dict(color='gray', width=1, dash='dot'), name='BB Upper'
+        ))
+        fig_main.add_trace(go.Scatter(
+            x=df_chart.index, y=bb_lower, line=dict(color='gray', width=1, dash='dot'), name='BB Lower'
+        ))
+        # Expected move lines (horizontal, from last date forward)
+        last_date = df_chart.index[-1]
+        next_day = last_date + pd.Timedelta(days=1)
+        next_week = last_date + pd.Timedelta(days=7)
+        # Daily move band
+        fig_main.add_trace(go.Scatter(
+            x=[last_date, next_day, next_week],
+            y=[upper_d, upper_d, upper_d],
+            mode='lines', line=dict(color='cyan', width=2, dash='dash'),
+            name='Daily Move Upper', showlegend=True
+        ))
+        fig_main.add_trace(go.Scatter(
+            x=[last_date, next_day, next_week],
+            y=[lower_d, lower_d, lower_d],
+            mode='lines', line=dict(color='cyan', width=2, dash='dash'),
+            name='Daily Move Lower', showlegend=True
+        ))
+        # Weekly move band (wider)
+        fig_main.add_trace(go.Scatter(
+            x=[last_date, next_day, next_week],
+            y=[upper_w, upper_w, upper_w],
+            mode='lines', line=dict(color='orange', width=2, dash='dot'),
+            name='Weekly Move Upper', showlegend=True
+        ))
+        fig_main.add_trace(go.Scatter(
+            x=[last_date, next_day, next_week],
+            y=[lower_w, lower_w, lower_w],
+            mode='lines', line=dict(color='orange', width=2, dash='dot'),
+            name='Weekly Move Lower', showlegend=True
+        ))
+        # Fill between expected moves for visual
+        fig_main.add_trace(go.Scatter(
+            x=[last_date, next_day], y=[lower_d, lower_d],
+            fill=None, mode='lines', line=dict(width=0), showlegend=False
+        ))
+        fig_main.add_trace(go.Scatter(
+            x=[last_date, next_day], y=[upper_d, upper_d],
+            fill='tonexty', fillcolor='rgba(0,255,255,0.05)', mode='lines', line=dict(width=0), showlegend=False
+        ))
+        fig_main.update_layout(
+            template='plotly_dark', height=600,
+            title=f"{asset_choice} — Daily Chart with Expected Moves",
+            xaxis_rangeslider_visible=False,
+            hovermode='x unified'
+        )
+        st.plotly_chart(fig_main, use_container_width=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# ───── METRICS ROW (like Fyers’ top stats) ─────
+# ───── METRICS ROW ─────
 st.markdown('<div class="metric-row">', unsafe_allow_html=True)
 cols = st.columns(5)
 metrics = [
@@ -405,7 +389,7 @@ for i, (label, value, sub) in enumerate(metrics):
         </div>''', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# ───── QUICK ORDER PANEL ─────
+# ───── QUICK TRADE PANEL ─────
 with st.expander("⚡ Quick Trade (Paper)", expanded=False):
     c1,c2,c3 = st.columns(3)
     dir = c1.selectbox("Direction", ["Long","Short"], key="dir")
@@ -424,18 +408,259 @@ with st.expander("⚡ Quick Trade (Paper)", expanded=False):
             st.success(f"{dir} {qty} {asset_choice} @ {currency}{price:,.2f}")
             st.rerun()
 
-# ───── DETAILED ANALYTICS (collapsible) ─────
-analysis_tabs = ["Correlation","Expected Move","Hurst","IVR/IVP","Liquidity","OI Profile","Parkinson","Vol Cone","VRP"]
-selected_tab = st.selectbox("Analysis Module", analysis_tabs, index=0)
-if selected_tab == "Correlation":
-    # correlation plot (simplified)
-    corr_data = yf_download_retry(['BTC-USD','ETH-USD'], period="1y")['Close']
-    fig, ax = plt.subplots()
-    ax.plot(corr_data.index, corr_data)
-    st.pyplot(fig)
-# ... (add all other analysis modules; same as original but using the custom functions)
+# ───── ANALYSIS MODULES WITH DEEP EXPLANATIONS ─────
+analysis_modules = [
+    "Correlation Analysis",
+    "Expected Daily & Weekly Move",
+    "Hurst Exponent (Market Regime)",
+    "IV Rank & IV Percentile",
+    "Liquidity Detector (Sweep)",
+    "Open Interest Profile (Max Pain)",
+    "Parkinson Volatility Estimator",
+    "Volatility Cone",
+    "Volatility Risk Premium (VRP)"
+]
+selected_module = st.selectbox("📊 Detailed Analytics", analysis_modules)
+
+# Helper to display explanation then chart
+def show_module(title, explanation, plot_func, *args, **kwargs):
+    st.markdown(f"## {title}")
+    st.markdown(explanation)
+    with st.spinner("Generating..."):
+        fig = plot_func(*args, **kwargs) if callable(plot_func) else None
+        if fig:
+            st.pyplot(fig)
+        else:
+            st.warning("Chart could not be generated.")
+
+if selected_module == "Correlation Analysis":
+    explanation = """
+    **Correlation Analysis** measures how closely two assets move together.  
+    - A **rolling 20‑day correlation** between Bitcoin and Ethereum (for Crypto) or Nifty and Bank Nifty (for Indian markets) is computed.  
+    - **Above 0.8** → high lockstep movement; trend‑following strategies tend to work.  
+    - **Below 0.5** → decoupling; consider neutral or pair‑trading strategies.  
+    - Watch for sudden drops in correlation – they often precede volatility regime shifts.
+    """
+    corr_tickers = ['BTC-USD','ETH-USD'] if selected_market=="Crypto" else ['^NSEI','^NSEBANK']
+    corr_data = yf_download_retry(corr_tickers, period="1y")['Close']
+    names = ("Bitcoin","Ethereum") if selected_market=="Crypto" else ("Nifty","Bank Nifty")
+    def plot_corr():
+        df = corr_data.dropna()
+        if df.empty: return None
+        df.columns = names
+        norm = df / df.iloc[0] * 100
+        log_ret = np.log(df / df.shift(1)).dropna()
+        roll_corr = log_ret[names[0]].rolling(20).corr(log_ret[names[1]])
+        cur = roll_corr.iloc[-1]
+        fig, (ax1,ax2) = plt.subplots(2,1,figsize=(12,7), gridspec_kw={'height_ratios':[2,1]})
+        ax1.plot(norm.index, norm[names[0]], label=names[0])
+        ax1.plot(norm.index, norm[names[1]], label=names[1])
+        ax1.legend(); ax1.set_title("Correlation")
+        ax2.plot(roll_corr.index, roll_corr, color='white')
+        ax2.axhline(0.8,color='green',ls='--'); ax2.axhline(0.5,color='red',ls='--'); ax2.set_ylim(-0.2,1.1)
+        plt.tight_layout(); return fig
+    show_module("Correlation Analysis", explanation, plot_corr)
+
+elif selected_module == "Expected Daily & Weekly Move":
+    explanation = """
+    **Expected Moves** project the ±1σ range for the next day and next week, derived from the current implied volatility (GARCH forecast or India VIX).  
+    - **Daily move** = Spot × IV × √(1/365) for Crypto (or 1/252 for Indian stocks).  
+    - **Weekly move** scales the daily move by √7.  
+    - These bands are **not** predictions – they represent the range within which the price is expected to stay roughly 68% of the time, assuming a normal distribution.  
+    - Use the lower/upper bounds as potential strike areas for options, or as zones for profit‑taking and stop‑loss placement.
+    """
+    iv_use = garch_vol
+    if selected_market == "Indian Market":
+        vix = get_india_vix("5d")
+        if vix is not None: iv_use = float(vix.iloc[-1])
+    recent_close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze().tail(20)
+    def plot_expected():
+        daily_vol = iv_use/100/np.sqrt(trading_days)
+        daily_move = asset_spot * daily_vol
+        weekly_move = daily_move * np.sqrt(7)
+        fig, ax = plt.subplots(figsize=(12,6))
+        ax.plot(recent_close.index, recent_close.values, color='white')
+        last_idx = recent_close.index[-1]
+        next_d = last_idx + pd.Timedelta(days=1)
+        next_w = last_idx + pd.Timedelta(days=7)
+        ax.hlines(asset_spot+daily_move, last_idx, next_d, colors='cyan', linestyles='--')
+        ax.hlines(asset_spot-daily_move, last_idx, next_d, colors='cyan', linestyles='--')
+        ax.hlines(asset_spot+weekly_move, last_idx, next_w, colors='orange', linestyles='--')
+        ax.hlines(asset_spot-weekly_move, last_idx, next_w, colors='orange', linestyles='--')
+        ax.set_title("Expected Moves")
+        plt.tight_layout(); return fig
+    show_module("Expected Daily & Weekly Move", explanation, plot_expected)
+
+elif selected_module == "Hurst Exponent (Market Regime)":
+    explanation = """
+    **Hurst Exponent (H)** quantifies the long‑term memory of a price series.  
+    - **H > 0.55** → trending market; ride momentum, use trailing stops.  
+    - **H < 0.45** → mean‑reverting; fade breakouts, take profits at the mean.  
+    - **H ≈ 0.50** → random walk; avoid aggressive directional bets, reduce position size.  
+    The chart below shows the 60‑day rolling Hurst overlaid on price.
+    """
+    def plot_hurst():
+        close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
+        log_p = np.log(close)
+        hurst_series = log_p.rolling(60).apply(lambda x: calculate_hurst_exponent(x) if len(x)>=20 else np.nan, raw=False)
+        df = pd.DataFrame({'Close':close,'Hurst':hurst_series}).dropna()
+        if df.empty: return None
+        fig, (ax1,ax2) = plt.subplots(2,1,figsize=(12,8), gridspec_kw={'height_ratios':[2,1]})
+        ax1.plot(df.index, df['Close'], color='white')
+        ax2.plot(df.index, df['Hurst'], color='cyan')
+        ax2.axhline(0.55,color='green',ls='--'); ax2.axhline(0.45,color='red',ls='--')
+        ax2.set_ylim(0.3,0.7)
+        return fig
+    show_module("Hurst Exponent", explanation, plot_hurst)
+
+elif selected_module == "IV Rank & IV Percentile":
+    explanation = """
+    **IV Rank (IVR)** and **IV Percentile (IVP)** tell you whether current volatility is high or low relative to the past.  
+    - **IVR** = (current vol – 1‑year low) / (1‑year high – 1‑year low) × 100.  
+    - **IVP** = percentage of days where vol was lower than today.  
+    - **IVR > 65** → options are expensive; favour selling premium (Iron Condors, Credit Spreads).  
+    - **IVR < 30** → options are cheap; favour buying premium (Debit Spreads, Long Straddles).  
+    The chart displays the rolling 20‑day historical volatility (or India VIX).
+    """
+    def plot_ivr():
+        close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
+        rolling_vol = np.log(close/close.shift(1)).dropna().rolling(20).std()*np.sqrt(252)*100
+        vol_series = rolling_vol.dropna()
+        cur = vol_series.iloc[-1]
+        vmin, vmax = vol_series.min(), vol_series.max()
+        ivr = ((cur-vmin)/(vmax-vmin))*100 if vmax!=vmin else 50
+        fig, ax = plt.subplots(figsize=(12,6))
+        ax.plot(vol_series.index, vol_series, color='cyan')
+        ax.axhline(vmax, color='red', ls='--'); ax.axhline(vmin, color='green', ls='--')
+        ax.set_title(f"IV Rank: {ivr:.0f}% | IV Percentile: {ivp_val:.0f}%")
+        return fig
+    show_module("IV Rank & IV Percentile", explanation, plot_ivr)
+
+elif selected_module == "Liquidity Detector (Sweep)":
+    explanation = """
+    **Liquidity sweeps** occur when price breaches a previous high/low but then reverses, indicating that larger players absorbed the breakout.  
+    - A **supply sweep** (price breaks above recent high, then closes below) is bearish.  
+    - A **demand sweep** (price breaks below recent low, then closes above) is bullish.  
+    The chart marks these events with markers.
+    """
+    intra = yf_download_retry(ticker, period="5d", interval="30m")
+    if intra is not None:
+        intra = flatten_df(intra).tail(60)
+    def plot_liquidity():
+        if intra is None: return None
+        df = intra.copy()
+        df['Prev_High'] = df['High'].rolling(20).max().shift(1)
+        df['Prev_Low'] = df['Low'].rolling(20).min().shift(1)
+        df['Supply'] = (df['High']>df['Prev_High']) & (df['Close']<df['Prev_High'])
+        df['Demand'] = (df['Low']<df['Prev_Low']) & (df['Close']>df['Prev_Low'])
+        fig, ax = plt.subplots(figsize=(12,6))
+        ax.plot(df.index, df['Close'], color='white')
+        ax.scatter(df.index[df['Supply']], df['High'][df['Supply']]+10, color='red', marker='v')
+        ax.scatter(df.index[df['Demand']], df['Low'][df['Demand']]-10, color='green', marker='^')
+        return fig
+    show_module("Liquidity Detector", explanation, plot_liquidity)
+
+elif selected_module == "Open Interest Profile (Max Pain)":
+    explanation = """
+    **Open Interest (OI)** shows where option positions are clustered.  
+    - **Max Pain** is the strike at which option buyers (mainly retail) lose the most money and option sellers profit the most.  
+    - Price often gravitates toward Max Pain near expiration.  
+    - If spot is below Max Pain → mild bullish bias; above → mild bearish.  
+    **Note:** For live markets, OI data is simulated due to API limitations. In a production terminal, this would be real‑time.
+    """
+    step = 500 if asset_spot>10000 else 50
+    base = round(asset_spot/step)*step
+    strikes = np.arange(base-8*step, base+9*step, step)
+    np.random.seed(int(asset_spot)%1234)
+    calls = np.random.randint(10,80,len(strikes))*50000
+    puts = np.random.randint(10,80,len(strikes))*50000
+    pain = {k: np.sum(np.maximum(0,k-strikes)*calls + np.maximum(0,strikes-k)*puts) for k in strikes}
+    max_pain = min(pain, key=pain.get)
+    def plot_oi():
+        fig, ax = plt.subplots(figsize=(14,8))
+        ax.barh(strikes, calls/1e5, color='red', alpha=0.8, label='Call OI')
+        ax.barh(strikes, -puts/1e5, color='green', alpha=0.8, label='Put OI')
+        ax.axhline(asset_spot, color='cyan', linewidth=2, label=f'Spot {asset_spot:,.0f}')
+        ax.axhline(max_pain, color='white', linestyle='--', label=f'Max Pain {max_pain}')
+        ax.legend(); ax.invert_yaxis(); return fig
+    show_module("Open Interest Profile", explanation, plot_oi)
+
+elif selected_module == "Parkinson Volatility Estimator":
+    explanation = """
+    **Parkinson volatility** uses the daily high‑low range to estimate intraday volatility.  
+    - It is a more efficient estimator than close‑to‑close when markets have large intraday swings.  
+    - Formula: σ = √( (1/(4·n·ln2)) · Σ(ln(High/Low)² ) ) · √(trading_days)  
+    - A rising Parkinson indicates increased intraday turbulence – widen stops, reduce size.
+    """
+    def plot_park():
+        df = st.session_state['long_hist_data'][asset_choice]
+        if df.empty or not all(c in df.columns for c in ['High','Low']): return None
+        high = df['High'].squeeze().tail(60); low = df['Low'].squeeze().tail(60)
+        park_val = calculate_parkinson_volatility(high,low,trading_days)
+        fig, ax = plt.subplots()
+        ax.bar(['Parkinson Vol'], [park_val], color='orange')
+        ax.set_ylabel('%'); ax.set_title(f"Parkinson Vol = {park_val:.1f}%")
+        return fig
+    show_module("Parkinson Volatility Estimator", explanation, plot_park)
+
+elif selected_module == "Volatility Cone":
+    explanation = """
+    **Volatility Cone** shows the distribution of historical volatility across different lookback windows.  
+    - The yellow crosses show the **current** volatility for each window.  
+    - If current vol is near the **max** of the cone → volatility is high, selling premium is favourable.  
+    - If near the **min** → volatility is low, buying premium is favourable.  
+    - Also helps compare short‑term vs long‑term vol.
+    """
+    def plot_cone():
+        close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
+        log_ret = np.log(close/close.shift(1)).dropna()
+        windows = [10,20,30,60,90,120,180,252]
+        max_v,min_v,med_v,cur_v = [],[],[],[]
+        for w in windows:
+            rv = log_ret.rolling(w).std()*np.sqrt(trading_days)*100
+            if not rv.dropna().empty:
+                max_v.append(rv.max()); min_v.append(rv.min()); med_v.append(rv.median()); cur_v.append(rv.iloc[-1])
+        fig, ax = plt.subplots(figsize=(12,7))
+        ax.plot(windows, max_v, 'o-', color='red', label='Max')
+        ax.plot(windows, min_v, 'o-', color='green', label='Min')
+        ax.plot(windows, med_v, 's--', color='white', label='Median')
+        ax.plot(windows, cur_v, 'X-', color='yellow', markersize=10, label='Current')
+        ax.fill_between(windows, min_v, max_v, alpha=0.2)
+        ax.legend(); ax.set_xlabel("Window (days)"); ax.set_ylabel("Vol (%)")
+        return fig
+    show_module("Volatility Cone", explanation, plot_cone)
+
+elif selected_module == "Volatility Risk Premium (VRP)":
+    explanation = """
+    **Volatility Risk Premium** is the difference between implied volatility (what the market expects) and realised volatility (what actually happened).  
+    - **Positive VRP** → implied > realised; on average, option sellers collect a premium.  
+    - **Negative VRP** → realised > implied; buyers were right; consider buying options.  
+    The chart plots the 20‑day rolling realised vol against the current IV.
+    """
+    def plot_vrp():
+        close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
+        log_ret = np.log(close/close.shift(1)).dropna()
+        hv = log_ret.rolling(20).std()*np.sqrt(trading_days)*100
+        iv = garch_vol
+        if selected_market=="Indian Market":
+            v = get_india_vix("6mo"); 
+            if v is not None: iv_series = v; iv = v.iloc[-1]
+        else: iv_series = pd.Series([iv]*len(hv), index=hv.index)
+        common = hv.index.intersection(iv_series.index)
+        hv_c = hv[common]; iv_c = iv_series[common]
+        vrp = iv_c - hv_c
+        fig, (ax1,ax2) = plt.subplots(2,1,figsize=(12,7), gridspec_kw={'height_ratios':[2,1]})
+        ax1.plot(common, iv_c, color='cyan', label='Implied')
+        ax1.plot(common, hv_c, color='orange', label='Realised')
+        ax1.fill_between(common, hv_c, iv_c, where=(iv_c>hv_c), color='green', alpha=0.3)
+        ax1.fill_between(common, hv_c, iv_c, where=(iv_c<=hv_c), color='red', alpha=0.3)
+        ax1.legend(); ax1.set_title("Volatility Risk Premium")
+        colors = ['green' if v>0 else 'red' for v in vrp]
+        ax2.bar(common, vrp, color=colors); ax2.axhline(0, color='white')
+        return fig
+    show_module("Volatility Risk Premium (VRP)", explanation, plot_vrp)
 
 # ───── AUTO REFRESH ─────
-if live_mode:
+if st.session_state['live_mode']:
     time.sleep(st.session_state['refresh_interval'])
     st.rerun()
