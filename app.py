@@ -1,5 +1,4 @@
-# AlphaQuant Terminal — Full Code, No pandas_ta, Fyers GUI, Expected Moves, Deep Explanations
-# Removed Quick Trade (Paper) section
+# AlphaQuant Terminal — Full Code + Daily Snapshot & After‑Close Analysis
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -38,11 +37,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Session state defaults (paper_balance and paper_positions kept but not used)
+# Session state defaults
 for key, default in [
     ('live_mode', False), ('refresh_interval', 120), ('selected_market', 'Crypto'),
     ('paper_balance', 100000), ('paper_positions', []), ('auto_exit_enabled', True),
-    ('ml_model_trained', False)
+    ('ml_model_trained', False), ('snapshots', [])
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -69,6 +68,37 @@ CACHE_TTL = CONFIG['cache_ttl']
 
 plt.style.use('dark_background')
 logging.basicConfig(level=logging.INFO); logger=logging.getLogger(__name__)
+
+# ───── SNAPSHOT FILE MANAGEMENT ─────
+SNAPSHOT_FILE = "daily_snapshots.csv"
+
+def load_snapshots():
+    """Load snapshots from CSV into session state if file exists."""
+    if os.path.exists(SNAPSHOT_FILE):
+        try:
+            df = pd.read_csv(SNAPSHOT_FILE)
+            # Convert date column to string to avoid parsing issues
+            st.session_state['snapshots'] = df.to_dict('records')
+        except Exception as e:
+            logger.error(f"Failed to load snapshots: {e}")
+            st.session_state['snapshots'] = []
+    else:
+        st.session_state['snapshots'] = []
+
+def save_snapshot(snap_dict):
+    """Append a snapshot dictionary to the CSV file."""
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(SNAPSHOT_FILE) if os.path.dirname(SNAPSHOT_FILE) else '.', exist_ok=True)
+    df_new = pd.DataFrame([snap_dict])
+    if os.path.exists(SNAPSHOT_FILE):
+        df_new.to_csv(SNAPSHOT_FILE, mode='a', header=False, index=False)
+    else:
+        df_new.to_csv(SNAPSHOT_FILE, index=False)
+
+# Load snapshots on first run
+if 'snapshots_loaded' not in st.session_state:
+    load_snapshots()
+    st.session_state['snapshots_loaded'] = True
 
 # ───── CUSTOM TECHNICAL INDICATORS (NO EXTERNAL TA LIBRARY) ─────
 def compute_rsi(series, period=14):
@@ -251,7 +281,7 @@ with col4:
         st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
 
-# ───── SIDEBAR WATCHLIST & ML ─────
+# ───── SIDEBAR: WATCHLIST, ML, SNAPSHOT ─────
 with st.sidebar:
     st.markdown("### Watchlist")
     for name, tkr in ticker_dict.items():
@@ -275,6 +305,26 @@ with st.sidebar:
                 close = hist['Close'].squeeze()
                 train_ml_model(close)
                 st.success("Model trained!")
+    st.markdown("---")
+    # Daily Snapshot button
+    if st.button("📸 Save Today's Snapshot"):
+        now = datetime.now()
+        snap = {
+            'date': now.strftime('%Y-%m-%d'),
+            'timestamp': now.strftime('%Y-%m-%d %H:%M:%S'),
+            'asset': asset_choice,
+            'market': selected_market,
+            'spot': asset_spot,
+            'garch_vol': garch_vol,
+            'park_vol': park_vol if park_vol else 0.0,
+            'ivr': ivr_val if ivr_val else 0.0,
+            'ivp': ivp_val if ivp_val else 0.0,
+            'daily_move': asset_spot * (garch_vol/100) * np.sqrt(1/trading_days),
+        }
+        # Append to session state and save to CSV
+        st.session_state['snapshots'].append(snap)
+        save_snapshot(snap)
+        st.success("Snapshot saved!")
 
 # ───── MAIN DATA LOADING (only selected asset) ─────
 hist_data = fetch_long_hist(ticker)
@@ -295,7 +345,7 @@ if not hist_data.empty and all(c in hist_data.columns for c in ['High','Low','Cl
     park_vol = calculate_parkinson_volatility(high,low,periods_per_year=trading_days)
     ivr_val, ivp_val = calculate_iv_rank_percentile(close)
 
-# ───── MAIN CHART (candlestick + BB + daily & weekly expected moves) ─────
+# ───── MAIN CHART ─────
 st.markdown('<div class="chart-container">', unsafe_allow_html=True)
 with st.spinner("Rendering advanced chart..."):
     df_chart = yf_download_retry(ticker, period="6mo", interval="1d")
@@ -626,6 +676,87 @@ elif selected_module == "Volatility Risk Premium (VRP)":
         ax2.bar(common, vrp, color=colors); ax2.axhline(0, color='white')
         return fig
     show_module("Volatility Risk Premium (VRP)", explanation, plot_vrp)
+
+# ───── DAILY SNAPSHOT ANALYSIS (AFTER MARKET CLOSE OVERVIEW) ─────
+with st.expander("📅 Daily Market Overview (Snapshot Analysis)", expanded=True):
+    snaps = st.session_state['snapshots']
+    if not snaps:
+        st.info("No snapshots saved yet. Use the sidebar button to capture today's data.")
+    else:
+        # Convert to DataFrame for analysis
+        df_snaps = pd.DataFrame(snaps)
+        # Ensure date is datetime and sorted
+        df_snaps['date'] = pd.to_datetime(df_snaps['date'])
+        df_snaps = df_snaps.sort_values('date')
+        
+        st.subheader("Recent Snapshots")
+        st.dataframe(df_snaps.tail(5), use_container_width=True)
+        
+        # Compute day-over-day changes
+        if len(df_snaps) >= 2:
+            latest = df_snaps.iloc[-1]
+            prev = df_snaps.iloc[-2]
+            
+            st.subheader("Day‑over‑Day Changes")
+            changes = {
+                'Spot': (latest['spot'] - prev['spot']),
+                'Spot %': ((latest['spot'] - prev['spot']) / prev['spot']) * 100,
+                'GARCH Vol': (latest['garch_vol'] - prev['garch_vol']),
+                'Parkinson Vol': (latest['park_vol'] - prev['park_vol']),
+                'IV Rank': (latest['ivr'] - prev['ivr']),
+                'IV Percentile': (latest['ivp'] - prev['ivp']),
+                'Daily Move': (latest['daily_move'] - prev['daily_move']),
+            }
+            changes_df = pd.DataFrame.from_dict(changes, orient='index', columns=['Change'])
+            st.dataframe(changes_df.style.format("{:,.2f}"), use_container_width=True)
+            
+            # Generate Market Overview Summary
+            st.subheader("Market Overview")
+            # Determine regime based on current metrics
+            spot_pct_change = changes['Spot %']
+            if spot_pct_change > 0.5:
+                price_statement = f"Price rose {spot_pct_change:.2f}%, indicating bullish momentum."
+            elif spot_pct_change < -0.5:
+                price_statement = f"Price fell {abs(spot_pct_change):.2f}%, reflecting bearish pressure."
+            else:
+                price_statement = "Price was relatively unchanged, showing consolidation."
+                
+            # Volatility interpretation
+            vol_statement = ""
+            if changes['GARCH Vol'] > 3:
+                vol_statement = "Volatility expanded significantly, suggesting increased uncertainty."
+            elif changes['GARCH Vol'] < -3:
+                vol_statement = "Volatility contracted, a potential precursor to a breakout."
+            else:
+                vol_statement = "Volatility remained stable."
+                
+            # IVR interpretation
+            ivr_statement = ""
+            if latest['ivr'] > 65:
+                ivr_statement = "IV Rank is high – options are expensive; consider selling premium."
+            elif latest['ivr'] < 30:
+                ivr_statement = "IV Rank is low – options are cheap; consider buying premium."
+            else:
+                ivr_statement = "IV Rank is moderate – neutral option strategies may be appropriate."
+                
+            # Expected move context
+            move_statement = f"Expected daily move is {currency}{latest['daily_move']:,.2f}, providing a 1σ range for tomorrow's trading."
+            
+            full_summary = f"{price_statement} {vol_statement} {ivr_statement} {move_statement}"
+            st.markdown(f"**Summary:** {full_summary}")
+            
+            # Trend chart of key metrics over time
+            st.subheader("Metrics Trend")
+            fig, ax1 = plt.subplots(figsize=(12,6))
+            ax1.plot(df_snaps['date'], df_snaps['spot'], marker='o', color='white', label='Spot')
+            ax2 = ax1.twinx()
+            ax2.plot(df_snaps['date'], df_snaps['garch_vol'], marker='s', color='cyan', label='GARCH Vol')
+            ax2.plot(df_snaps['date'], df_snaps['park_vol'], marker='^', color='orange', label='Parkinson Vol')
+            fig.legend(loc='upper left')
+            ax1.tick_params(axis='x', rotation=45)
+            st.pyplot(fig)
+        else:
+            st.info("At least two snapshots are needed for comparison.")
 
 # ───── AUTO REFRESH ─────
 if st.session_state['live_mode']:
