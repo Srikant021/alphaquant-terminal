@@ -1,4 +1,4 @@
-# AlphaQuant Terminal — Fyers GUI, No External TA, Advanced Charts & Deep Explanations
+# AlphaQuant Terminal — Full Code, No pandas_ta, Fyers GUI, Expected Moves, Deep Explanations
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +9,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import scipy.stats as si
 from arch import arch_model
-import requests, time, logging, yaml, os, re
+import requests, time, logging, yaml, os
 
 # Optional ML
 try:
@@ -24,59 +24,24 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     html, body, .stApp { font-family: 'Inter', sans-serif; background: #0E1117; color: #E0E0E0; }
-    .header-bar {
-        background: #1A1D24; padding: 10px 20px; border-bottom: 1px solid #2A2E39;
-        display: flex; justify-content: space-between; align-items: center;
-    }
-    .market-index { font-size: 0.9rem; color: #A0A7B8; margin-right: 20px; }
-    .market-index span { font-weight: 600; color: #FFFFFF; }
-    [data-testid="stSidebar"] {
-        background: #13161C; border-right: 1px solid #2A2E39;
-    }
-    .watchlist-item {
-        padding: 8px 12px; border-radius: 6px; cursor: pointer; margin: 2px 0;
-        transition: background 0.2s;
-    }
-    .watchlist-item:hover { background: #1E2230; }
-    .watchlist-item.selected { background: #2A3A5C; }
-    .watchlist-item .symbol { font-weight: 600; color: #FFFFFF; }
-    .watchlist-item .change { font-size: 0.8rem; }
-    .positive { color: #00C48C; }
-    .negative { color: #FF4D4D; }
-    .chart-container {
-        background: #13161C; border: 1px solid #2A2E39; border-radius: 8px;
-        padding: 10px; margin-bottom: 15px;
-    }
-    .metric-row {
-        display: flex; gap: 10px; margin: 15px 0; flex-wrap: wrap;
-    }
-    .metric-card {
-        background: #1A1D24; border: 1px solid #2A2E39; border-radius: 8px;
-        padding: 12px 18px; flex: 1; min-width: 120px;
-    }
+    .header-bar { background: #1A1D24; padding: 10px 20px; border-bottom: 1px solid #2A2E39; display: flex; justify-content: space-between; align-items: center; }
+    [data-testid="stSidebar"] { background: #13161C; border-right: 1px solid #2A2E39; }
+    .chart-container { background: #13161C; border: 1px solid #2A2E39; border-radius: 8px; padding: 10px; margin-bottom: 15px; }
+    .metric-row { display: flex; gap: 10px; margin: 15px 0; flex-wrap: wrap; }
+    .metric-card { background: #1A1D24; border: 1px solid #2A2E39; border-radius: 8px; padding: 12px 18px; flex: 1; min-width: 120px; }
     .metric-card .label { font-size: 0.75rem; color: #A0A7B8; margin-bottom: 4px; }
     .metric-card .value { font-size: 1.3rem; font-weight: 700; color: #FFFFFF; }
     .metric-card .sub { font-size: 0.8rem; color: #7A8296; }
-    .stButton>button {
-        background: #2A3A5C; color: white; border: none; border-radius: 4px;
-        font-weight: 500; transition: background 0.2s;
-    }
+    .stButton>button { background: #2A3A5C; color: white; border: none; border-radius: 4px; font-weight: 500; }
     .stButton>button:hover { background: #3A4D7A; }
-    .streamlit-expanderHeader {
-        background: #1A1D24; border-radius: 6px; border: 1px solid #2A2E39;
-    }
-    ::-webkit-scrollbar { width: 6px; }
-    ::-webkit-scrollbar-track { background: #13161C; }
-    ::-webkit-scrollbar-thumb { background: #2A2E39; border-radius: 3px; }
 </style>
 """, unsafe_allow_html=True)
 
 # Session state defaults
 for key, default in [
     ('live_mode', False), ('refresh_interval', 120), ('selected_market', 'Crypto'),
-    ('selected_analysis', 'Correlation'), ('snapshots', []), ('show_order_flow', False),
-    ('trade_journal', []), ('paper_balance', 100000), ('paper_positions', []),
-    ('paper_trade_history', []), ('auto_exit_enabled', True), ('ml_model_trained', False)
+    ('paper_balance', 100000), ('paper_positions', []), ('auto_exit_enabled', True),
+    ('ml_model_trained', False)
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -89,8 +54,7 @@ def load_config():
         'indian_market': {'Nifty 50':'^NSEI','Sensex':'^BSESN','Bank Nifty':'^NSEBANK',
                          'Gold (MCX)':'GOLDM.NS','Silver (MCX)':'SILVERM.NS',
                          'Crude Oil (MCX)':'CRUDEOIL.NS','Natural Gas (MCX)':'NATURALGAS.NS'},
-        'cache_ttl': {'long_hist':3600,'garch':1800,'live_price':300,'intraday':300},
-        'theme':'dark'
+        'cache_ttl': {'long_hist':3600,'garch':1800,'live_price':300,'intraday':300}
     }
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH,'r') as f:
@@ -105,7 +69,7 @@ CACHE_TTL = CONFIG['cache_ttl']
 plt.style.use('dark_background')
 logging.basicConfig(level=logging.INFO); logger=logging.getLogger(__name__)
 
-# ───── CUSTOM TECHNICAL INDICATORS (no pandas_ta) ─────
+# ───── CUSTOM TECHNICAL INDICATORS (NO EXTERNAL TA LIBRARY) ─────
 def compute_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -114,6 +78,14 @@ def compute_rsi(series, period=14):
     avg_loss = loss.ewm(alpha=1/period, min_periods=period).mean()
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
+
+def compute_macd(series, fast=12, slow=26, signal=9):
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
 
 def compute_bbands(series, period=20, std=2):
     sma = series.rolling(window=period).mean()
@@ -147,8 +119,23 @@ def calculate_iv_rank_percentile(close_px,window=20):
     ivp=(rolling_vol<cur_vol).sum()/len(rolling_vol)*100
     return ivr,ivp
 
-# ───── DATA UTILITIES ─────
-def yf_download_retry(*args, max_retries=3, **kwargs):
+def calc_greeks(S,K,T,r,sigma,otype="call"):
+    try:
+        T=max(T,1e-5)
+        d1=(np.log(S/K)+(r+0.5*sigma**2)*T)/(sigma*np.sqrt(T))
+        d2=d1-sigma*np.sqrt(T)
+        if otype=="call":
+            pr=S*si.norm.cdf(d1)-K*np.exp(-r*T)*si.norm.cdf(d2)
+            delta=si.norm.cdf(d1); theta=(-(S*si.norm.pdf(d1)*sigma)/(2*np.sqrt(T))-r*K*np.exp(-r*T)*si.norm.cdf(d2))/365
+        else:
+            pr=K*np.exp(-r*T)*si.norm.cdf(-d2)-S*si.norm.cdf(-d1)
+            delta=si.norm.cdf(d1)-1; theta=(-(S*si.norm.pdf(d1)*sigma)/(2*np.sqrt(T))+r*K*np.exp(-r*T)*si.norm.cdf(-d2))/365
+        gamma=si.norm.pdf(d1)/(S*sigma*np.sqrt(T)); vega=(S*np.sqrt(T)*si.norm.pdf(d1))/100
+        return {'price':max(0.5,pr),'delta':delta,'gamma':gamma,'theta':theta,'vega':vega}
+    except: return {'price':25,'delta':0.5,'gamma':0.001,'theta':-1.5,'vega':10}
+
+# ───── DATA UTILITIES (rate‑limit friendly) ─────
+def yf_download_retry(*args, max_retries=2, **kwargs):
     for attempt in range(max_retries):
         try:
             data = yf.download(*args, progress=False, **kwargs)
@@ -164,12 +151,9 @@ def flatten_df(df_raw):
     return df_raw
 
 @st.cache_data(ttl=CACHE_TTL['long_hist'], show_spinner=False)
-def fetch_long_hist(ticker_dict):
-    bundle={}
-    for name,ticker in ticker_dict.items():
-        raw=yf_download_retry(ticker, period="2y")
-        if not raw.empty: bundle[name]=flatten_df(raw)
-    return bundle
+def fetch_long_hist(ticker):
+    raw=yf_download_retry(ticker, period="2y")
+    return flatten_df(raw) if not raw.empty else pd.DataFrame()
 
 @st.cache_data(ttl=CACHE_TTL['live_price'], show_spinner=False)
 def live_price(ticker):
@@ -178,7 +162,7 @@ def live_price(ticker):
     df=flatten_df(raw)
     if len(df)<2: return None
     last=float(df['Close'].iloc[-1]); prev=float(df['Close'].iloc[-2])
-    chg=last-prev; pct=(chg/prev)*100 if prev else 0
+    chg=last-prev; pct=((last-prev)/prev)*100 if prev else 0
     return {'spot':last,'prev_close':prev,'change':chg,'pct':pct,'ts':datetime.now().strftime('%H:%M:%S')}
 
 @st.cache_data(ttl=CACHE_TTL['garch'])
@@ -201,8 +185,7 @@ def garch_both(ticker):
 @st.cache_data(ttl=300)
 def get_india_vix(period="5d"):
     v = yf_download_retry("^INDIAVIX", period=period)['Close'].squeeze()
-    if v.empty: return None
-    return v
+    return v if not v.empty else None
 
 @st.cache_data(ttl=300)
 def fetch_deribit_option_chain(coin="BTC"):
@@ -229,6 +212,23 @@ def fetch_deribit_option_chain(coin="BTC"):
         return pd.DataFrame(option_data)
     except: return None
 
+# ───── ML MODEL ─────
+def train_ml_model(close_px):
+    if not ML_AVAILABLE: return None
+    try:
+        df=pd.DataFrame(close_px, columns=['close'])
+        df['ret']=df['close'].pct_change(); df['vol']=df['ret'].rolling(10).std()
+        df['rsi']=100-100/(1+df['ret'].rolling(14).mean()/df['ret'].rolling(14).std())
+        exp12=df['close'].ewm(span=12,adjust=False).mean(); exp26=df['close'].ewm(span=26,adjust=False).mean()
+        df['macd']=exp12-exp26; df['target']=(df['close'].shift(-1)>df['close']).astype(int)
+        df.dropna(inplace=True)
+        if len(df)<100: return None
+        X=df[['ret','vol','rsi','macd']].values[-500:]; y=df['target'].values[-500:]
+        model=XGBClassifier(n_estimators=100, max_depth=3); model.fit(X,y)
+        st.session_state['ml_model']=model; st.session_state['ml_model_trained']=True
+        return model
+    except: return None
+
 # ───── HEADER BAR ─────
 st.markdown('<div class="header-bar">', unsafe_allow_html=True)
 col1, col2, col3, col4 = st.columns([2,2,1,1])
@@ -245,129 +245,109 @@ with col2:
 with col3:
     st.session_state['live_mode'] = st.checkbox("Live", value=st.session_state['live_mode'])
 with col4:
-    if st.button("Refresh", key="refresh_header"):
+    if st.button("Refresh"):
         st.cache_data.clear()
         st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
 
-# ───── SIDEBAR WATCHLIST ─────
+# ───── SIDEBAR WATCHLIST & ML ─────
 with st.sidebar:
     st.markdown("### Watchlist")
     for name, tkr in ticker_dict.items():
-        live = live_price(tkr)
-        if live:
-            spot, chg = live['spot'], live['change']
-            col1, col2 = st.columns([3,1])
-            col1.markdown(f"**{name}**  {currency}{spot:,.2f}")
-            delta_class = "positive" if chg >=0 else "negative"
-            col2.markdown(f"<span class='{delta_class}'>{chg:+.2f}</span>", unsafe_allow_html=True)
-        else:
+        try:
+            live = live_price(tkr)
+            if live:
+                spot, chg = live['spot'], live['change']
+                col1, col2 = st.columns([3,1])
+                col1.markdown(f"**{name}**  {currency}{spot:,.2f}")
+                delta_class = "positive" if chg >=0 else "negative"
+                col2.markdown(f"<span style='color:{'#00C48C' if chg>=0 else '#FF4D4D'}'>{chg:+.2f}</span>", unsafe_allow_html=True)
+            else:
+                st.text(f"{name} --")
+        except:
             st.text(f"{name} --")
     st.markdown("---")
-    if ML_AVAILABLE and st.button("Train ML Model"):
-        hist = st.session_state.get('long_hist_data',{}).get(asset_choice)
-        if hist is not None:
-            close = hist['Close'].squeeze(); train_ml_model(close); st.success("Model trained!")
+    if ML_AVAILABLE:
+        if st.button("Train ML Model"):
+            hist = fetch_long_hist(ticker)
+            if not hist.empty:
+                close = hist['Close'].squeeze()
+                train_ml_model(close)
+                st.success("Model trained!")
 
-# ───── LOAD HISTORICAL DATA ─────
-if 'long_hist_data' not in st.session_state or asset_choice not in st.session_state.get('long_hist_data', {}):
-    st.session_state['long_hist_data'] = fetch_long_hist(ticker_dict)
-
+# ───── MAIN DATA LOADING (only selected asset) ─────
+hist_data = fetch_long_hist(ticker)
 lp = live_price(ticker)
-if lp is None:
-    hist = st.session_state['long_hist_data'].get(asset_choice)
-    if hist is not None and len(hist) >= 2:
-        close = hist['Close'].squeeze()
+if lp is None and not hist_data.empty:
+    close = hist_data['Close'].squeeze()
+    if len(close) >= 2:
         spot = float(close.iloc[-1]); prev = float(close.iloc[-2])
         lp = {'spot':spot,'prev_close':prev,'change':spot-prev,'pct':((spot-prev)/prev)*100,'ts':'hist'}
-    else: lp = {'spot':0,'prev_close':0,'change':0,'pct':0,'ts':'unavailable'}
+    else:
+        lp = {'spot':0,'prev_close':0,'change':0,'pct':0,'ts':'unavailable'}
 asset_spot = lp['spot']
 garch_vol, gjrgarch_vol = garch_both(ticker)
 
-park_vol = None; ivr_val = ivp_val = None
-if asset_choice in st.session_state['long_hist_data']:
-    df = st.session_state['long_hist_data'][asset_choice]
-    if not df.empty and all(c in df.columns for c in ['High','Low','Close']):
-        high = df['High'].squeeze().tail(60); low = df['Low'].squeeze().tail(60); close = df['Close'].squeeze().tail(60)
-        park_vol = calculate_parkinson_volatility(high,low,periods_per_year=trading_days)
-        ivr_val, ivp_val = calculate_iv_rank_percentile(close)
+park_vol = ivr_val = ivp_val = None
+if not hist_data.empty and all(c in hist_data.columns for c in ['High','Low','Close']):
+    high = hist_data['High'].squeeze().tail(60); low = hist_data['Low'].squeeze().tail(60); close = hist_data['Close'].squeeze().tail(60)
+    park_vol = calculate_parkinson_volatility(high,low,periods_per_year=trading_days)
+    ivr_val, ivp_val = calculate_iv_rank_percentile(close)
 
-# ───── MAIN CHART (advanced, no MACD/RSI, daily+weekly moves) ─────
+# ───── MAIN CHART (candlestick + BB + daily & weekly expected moves) ─────
 st.markdown('<div class="chart-container">', unsafe_allow_html=True)
 with st.spinner("Rendering advanced chart..."):
     df_chart = yf_download_retry(ticker, period="6mo", interval="1d")
     if not df_chart.empty:
         df_chart = flatten_df(df_chart)
-        # Bollinger Bands
         bb_upper, bb_mid, bb_lower = compute_bbands(df_chart['Close'])
-        # Daily and weekly expected moves
         iv_est = garch_vol / 100
         daily_move = asset_spot * iv_est * np.sqrt(1/trading_days)
-        weekly_move = asset_spot * iv_est * np.sqrt(7/trading_days)   # assuming 7 calendar days
-        upper_d = asset_spot + daily_move
-        lower_d = asset_spot - daily_move
-        upper_w = asset_spot + weekly_move
-        lower_w = asset_spot - weekly_move
+        weekly_move = daily_move * np.sqrt(7)
+        last_date = df_chart.index[-1]
+        next_day = last_date + pd.Timedelta(days=1)
+        next_week = last_date + pd.Timedelta(days=7)
 
         fig_main = make_subplots(specs=[[{"secondary_y": False}]])
-        # Candlestick
         fig_main.add_trace(go.Candlestick(
             x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
             low=df_chart['Low'], close=df_chart['Close'], name='Price'
         ))
-        # Bollinger Bands
         fig_main.add_trace(go.Scatter(
-            x=df_chart.index, y=bb_upper, line=dict(color='gray', width=1, dash='dot'), name='BB Upper'
+            x=df_chart.index, y=bb_upper, line=dict(color='gray',width=1,dash='dot'), name='BB Upper'
         ))
         fig_main.add_trace(go.Scatter(
-            x=df_chart.index, y=bb_lower, line=dict(color='gray', width=1, dash='dot'), name='BB Lower'
+            x=df_chart.index, y=bb_lower, line=dict(color='gray',width=1,dash='dot'), name='BB Lower'
         ))
-        # Expected move lines (horizontal, from last date forward)
-        last_date = df_chart.index[-1]
-        next_day = last_date + pd.Timedelta(days=1)
-        next_week = last_date + pd.Timedelta(days=7)
-        # Daily move band
+        # Daily expected move (cyan)
+        for bound, label in [(asset_spot+daily_move, 'Daily Upper'), (asset_spot-daily_move, 'Daily Lower')]:
+            fig_main.add_trace(go.Scatter(
+                x=[last_date, next_day, next_week],
+                y=[bound]*3,
+                mode='lines', line=dict(color='cyan', width=2, dash='dash'), name=label
+            ))
+        # Weekly expected move (orange)
+        for bound, label in [(asset_spot+weekly_move, 'Weekly Upper'), (asset_spot-weekly_move, 'Weekly Lower')]:
+            fig_main.add_trace(go.Scatter(
+                x=[last_date, next_day, next_week],
+                y=[bound]*3,
+                mode='lines', line=dict(color='orange', width=2, dash='dot'), name=label
+            ))
+        # Shading between daily move
         fig_main.add_trace(go.Scatter(
-            x=[last_date, next_day, next_week],
-            y=[upper_d, upper_d, upper_d],
-            mode='lines', line=dict(color='cyan', width=2, dash='dash'),
-            name='Daily Move Upper', showlegend=True
-        ))
-        fig_main.add_trace(go.Scatter(
-            x=[last_date, next_day, next_week],
-            y=[lower_d, lower_d, lower_d],
-            mode='lines', line=dict(color='cyan', width=2, dash='dash'),
-            name='Daily Move Lower', showlegend=True
-        ))
-        # Weekly move band (wider)
-        fig_main.add_trace(go.Scatter(
-            x=[last_date, next_day, next_week],
-            y=[upper_w, upper_w, upper_w],
-            mode='lines', line=dict(color='orange', width=2, dash='dot'),
-            name='Weekly Move Upper', showlegend=True
-        ))
-        fig_main.add_trace(go.Scatter(
-            x=[last_date, next_day, next_week],
-            y=[lower_w, lower_w, lower_w],
-            mode='lines', line=dict(color='orange', width=2, dash='dot'),
-            name='Weekly Move Lower', showlegend=True
-        ))
-        # Fill between expected moves for visual
-        fig_main.add_trace(go.Scatter(
-            x=[last_date, next_day], y=[lower_d, lower_d],
+            x=[last_date, next_day], y=[asset_spot-daily_move, asset_spot-daily_move],
             fill=None, mode='lines', line=dict(width=0), showlegend=False
         ))
         fig_main.add_trace(go.Scatter(
-            x=[last_date, next_day], y=[upper_d, upper_d],
+            x=[last_date, next_day], y=[asset_spot+daily_move, asset_spot+daily_move],
             fill='tonexty', fillcolor='rgba(0,255,255,0.05)', mode='lines', line=dict(width=0), showlegend=False
         ))
         fig_main.update_layout(
             template='plotly_dark', height=600,
             title=f"{asset_choice} — Daily Chart with Expected Moves",
-            xaxis_rangeslider_visible=False,
-            hovermode='x unified'
+            xaxis_rangeslider_visible=False, hovermode='x unified'
         )
-        st.plotly_chart(fig_main, use_container_width=True)
+        st.plotly_chart(fig_main, width='stretch')
 st.markdown('</div>', unsafe_allow_html=True)
 
 # ───── METRICS ROW ─────
@@ -389,10 +369,10 @@ for i, (label, value, sub) in enumerate(metrics):
         </div>''', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# ───── QUICK TRADE PANEL ─────
+# ───── QUICK TRADE ─────
 with st.expander("⚡ Quick Trade (Paper)", expanded=False):
     c1,c2,c3 = st.columns(3)
-    dir = c1.selectbox("Direction", ["Long","Short"], key="dir")
+    dir = c1.selectbox("Direction", ["Long","Short"])
     qty = c2.number_input("Qty", min_value=0.01, value=0.01, step=0.01)
     price = c3.number_input("Price", value=asset_spot)
     if st.button("Place Order"):
@@ -408,7 +388,7 @@ with st.expander("⚡ Quick Trade (Paper)", expanded=False):
             st.success(f"{dir} {qty} {asset_choice} @ {currency}{price:,.2f}")
             st.rerun()
 
-# ───── ANALYSIS MODULES WITH DEEP EXPLANATIONS ─────
+# ───── ANALYSIS MODULES (with deep explanations) ─────
 analysis_modules = [
     "Correlation Analysis",
     "Expected Daily & Weekly Move",
@@ -422,7 +402,6 @@ analysis_modules = [
 ]
 selected_module = st.selectbox("📊 Detailed Analytics", analysis_modules)
 
-# Helper to display explanation then chart
 def show_module(title, explanation, plot_func, *args, **kwargs):
     st.markdown(f"## {title}")
     st.markdown(explanation)
@@ -433,6 +412,7 @@ def show_module(title, explanation, plot_func, *args, **kwargs):
         else:
             st.warning("Chart could not be generated.")
 
+# ───── CORRELATION ANALYSIS ─────
 if selected_module == "Correlation Analysis":
     explanation = """
     **Correlation Analysis** measures how closely two assets move together.  
@@ -442,12 +422,11 @@ if selected_module == "Correlation Analysis":
     - Watch for sudden drops in correlation – they often precede volatility regime shifts.
     """
     corr_tickers = ['BTC-USD','ETH-USD'] if selected_market=="Crypto" else ['^NSEI','^NSEBANK']
-    corr_data = yf_download_retry(corr_tickers, period="1y")['Close']
-    names = ("Bitcoin","Ethereum") if selected_market=="Crypto" else ("Nifty","Bank Nifty")
     def plot_corr():
-        df = corr_data.dropna()
-        if df.empty: return None
-        df.columns = names
+        corr_data = yf_download_retry(corr_tickers, period="1y")['Close']
+        if corr_data.empty: return None
+        names = ("Bitcoin","Ethereum") if selected_market=="Crypto" else ("Nifty","Bank Nifty")
+        df = corr_data.dropna(); df.columns = names
         norm = df / df.iloc[0] * 100
         log_ret = np.log(df / df.shift(1)).dropna()
         roll_corr = log_ret[names[0]].rolling(20).corr(log_ret[names[1]])
@@ -461,6 +440,7 @@ if selected_module == "Correlation Analysis":
         plt.tight_layout(); return fig
     show_module("Correlation Analysis", explanation, plot_corr)
 
+# ───── EXPECTED MOVE ─────
 elif selected_module == "Expected Daily & Weekly Move":
     explanation = """
     **Expected Moves** project the ±1σ range for the next day and next week, derived from the current implied volatility (GARCH forecast or India VIX).  
@@ -473,7 +453,7 @@ elif selected_module == "Expected Daily & Weekly Move":
     if selected_market == "Indian Market":
         vix = get_india_vix("5d")
         if vix is not None: iv_use = float(vix.iloc[-1])
-    recent_close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze().tail(20)
+    recent_close = hist_data['Close'].squeeze().tail(20)
     def plot_expected():
         daily_vol = iv_use/100/np.sqrt(trading_days)
         daily_move = asset_spot * daily_vol
@@ -491,6 +471,7 @@ elif selected_module == "Expected Daily & Weekly Move":
         plt.tight_layout(); return fig
     show_module("Expected Daily & Weekly Move", explanation, plot_expected)
 
+# ───── HURST ─────
 elif selected_module == "Hurst Exponent (Market Regime)":
     explanation = """
     **Hurst Exponent (H)** quantifies the long‑term memory of a price series.  
@@ -500,7 +481,7 @@ elif selected_module == "Hurst Exponent (Market Regime)":
     The chart below shows the 60‑day rolling Hurst overlaid on price.
     """
     def plot_hurst():
-        close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
+        close = hist_data['Close'].squeeze()
         log_p = np.log(close)
         hurst_series = log_p.rolling(60).apply(lambda x: calculate_hurst_exponent(x) if len(x)>=20 else np.nan, raw=False)
         df = pd.DataFrame({'Close':close,'Hurst':hurst_series}).dropna()
@@ -513,6 +494,7 @@ elif selected_module == "Hurst Exponent (Market Regime)":
         return fig
     show_module("Hurst Exponent", explanation, plot_hurst)
 
+# ───── IV RANK & PERCENTILE ─────
 elif selected_module == "IV Rank & IV Percentile":
     explanation = """
     **IV Rank (IVR)** and **IV Percentile (IVP)** tell you whether current volatility is high or low relative to the past.  
@@ -523,7 +505,7 @@ elif selected_module == "IV Rank & IV Percentile":
     The chart displays the rolling 20‑day historical volatility (or India VIX).
     """
     def plot_ivr():
-        close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
+        close = hist_data['Close'].squeeze()
         rolling_vol = np.log(close/close.shift(1)).dropna().rolling(20).std()*np.sqrt(252)*100
         vol_series = rolling_vol.dropna()
         cur = vol_series.iloc[-1]
@@ -536,6 +518,7 @@ elif selected_module == "IV Rank & IV Percentile":
         return fig
     show_module("IV Rank & IV Percentile", explanation, plot_ivr)
 
+# ───── LIQUIDITY SWEEP ─────
 elif selected_module == "Liquidity Detector (Sweep)":
     explanation = """
     **Liquidity sweeps** occur when price breaches a previous high/low but then reverses, indicating that larger players absorbed the breakout.  
@@ -560,6 +543,7 @@ elif selected_module == "Liquidity Detector (Sweep)":
         return fig
     show_module("Liquidity Detector", explanation, plot_liquidity)
 
+# ───── OI PROFILE (MAX PAIN) ─────
 elif selected_module == "Open Interest Profile (Max Pain)":
     explanation = """
     **Open Interest (OI)** shows where option positions are clustered.  
@@ -585,6 +569,7 @@ elif selected_module == "Open Interest Profile (Max Pain)":
         ax.legend(); ax.invert_yaxis(); return fig
     show_module("Open Interest Profile", explanation, plot_oi)
 
+# ───── PARKINSON ─────
 elif selected_module == "Parkinson Volatility Estimator":
     explanation = """
     **Parkinson volatility** uses the daily high‑low range to estimate intraday volatility.  
@@ -593,9 +578,7 @@ elif selected_module == "Parkinson Volatility Estimator":
     - A rising Parkinson indicates increased intraday turbulence – widen stops, reduce size.
     """
     def plot_park():
-        df = st.session_state['long_hist_data'][asset_choice]
-        if df.empty or not all(c in df.columns for c in ['High','Low']): return None
-        high = df['High'].squeeze().tail(60); low = df['Low'].squeeze().tail(60)
+        high = hist_data['High'].squeeze().tail(60); low = hist_data['Low'].squeeze().tail(60)
         park_val = calculate_parkinson_volatility(high,low,trading_days)
         fig, ax = plt.subplots()
         ax.bar(['Parkinson Vol'], [park_val], color='orange')
@@ -603,6 +586,7 @@ elif selected_module == "Parkinson Volatility Estimator":
         return fig
     show_module("Parkinson Volatility Estimator", explanation, plot_park)
 
+# ───── VOLATILITY CONE ─────
 elif selected_module == "Volatility Cone":
     explanation = """
     **Volatility Cone** shows the distribution of historical volatility across different lookback windows.  
@@ -612,7 +596,7 @@ elif selected_module == "Volatility Cone":
     - Also helps compare short‑term vs long‑term vol.
     """
     def plot_cone():
-        close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
+        close = hist_data['Close'].squeeze()
         log_ret = np.log(close/close.shift(1)).dropna()
         windows = [10,20,30,60,90,120,180,252]
         max_v,min_v,med_v,cur_v = [],[],[],[]
@@ -630,6 +614,7 @@ elif selected_module == "Volatility Cone":
         return fig
     show_module("Volatility Cone", explanation, plot_cone)
 
+# ───── VOLATILITY RISK PREMIUM ─────
 elif selected_module == "Volatility Risk Premium (VRP)":
     explanation = """
     **Volatility Risk Premium** is the difference between implied volatility (what the market expects) and realised volatility (what actually happened).  
@@ -638,12 +623,12 @@ elif selected_module == "Volatility Risk Premium (VRP)":
     The chart plots the 20‑day rolling realised vol against the current IV.
     """
     def plot_vrp():
-        close = st.session_state['long_hist_data'][asset_choice]['Close'].squeeze()
+        close = hist_data['Close'].squeeze()
         log_ret = np.log(close/close.shift(1)).dropna()
         hv = log_ret.rolling(20).std()*np.sqrt(trading_days)*100
         iv = garch_vol
         if selected_market=="Indian Market":
-            v = get_india_vix("6mo"); 
+            v = get_india_vix("6mo")
             if v is not None: iv_series = v; iv = v.iloc[-1]
         else: iv_series = pd.Series([iv]*len(hv), index=hv.index)
         common = hv.index.intersection(iv_series.index)
