@@ -1,4 +1,4 @@
-# AlphaQuant Terminal — All Technical Analyses in One Tab + Combined Summary
+# AlphaQuant Terminal — All Technical Analyses in One Tab + Daily Snapshots for Both Markets
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -17,7 +17,6 @@ try:
 except:
     ML_AVAILABLE = False
 
-# ───── PAGE CONFIG & FYERS CSS ─────
 st.set_page_config(page_title="AlphaQuant Terminal", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
 <style>
@@ -36,7 +35,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ───── SESSION STATE ─────
 for key, default in [
     ('live_mode', False), ('refresh_interval', 120), ('selected_market', 'Crypto'),
     ('paper_balance', 100000), ('paper_positions', []), ('auto_exit_enabled', True),
@@ -46,7 +44,6 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
-# ───── CONFIG ─────
 CONFIG_PATH = "crypto_config.yaml"
 def load_config():
     default = {
@@ -109,11 +106,8 @@ def load_habit_data():
             if 'Score' not in df.columns:
                 df['Score'] = df[TASKS].sum(axis=1) / len(TASKS) * 100
             return df
-        except Exception as e:
-            logger.error(f"Error loading habit data: {e}")
-            return pd.DataFrame(columns=['Date'] + TASKS + ['Score'])
-    else:
-        return pd.DataFrame(columns=['Date'] + TASKS + ['Score'])
+        except: return pd.DataFrame(columns=['Date'] + TASKS + ['Score'])
+    else: return pd.DataFrame(columns=['Date'] + TASKS + ['Score'])
 
 def save_habit_data(df):
     df.to_csv(HABIT_FILE, index=False)
@@ -123,25 +117,15 @@ def initialize_monthly_habit():
     year, month = today.year, today.month
     df = st.session_state['habit_data']
     if df.empty:
-        days_in_month = calendar.monthrange(year, month)[1]
         all_dates = pd.date_range(start=datetime(year, month, 1), end=today, freq='D')
-        new_rows = []
-        for d in all_dates:
-            row = {'Date': d.date()}
-            for task in TASKS:
-                row[task] = False
-            new_rows.append(row)
+        new_rows = [{'Date': d.date(), **{t:False for t in TASKS}} for d in all_dates]
         df = pd.DataFrame(new_rows)
     else:
-        existing_dates = set(pd.to_datetime(df['Date']).dt.date)
-        start_of_month = datetime(year, month, 1).date()
-        d = start_of_month
+        existing = set(pd.to_datetime(df['Date']).dt.date)
+        d = datetime(year, month, 1).date()
         while d <= today:
-            if d not in existing_dates:
-                new_row = {'Date': d}
-                for task in TASKS:
-                    new_row[task] = False
-                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            if d not in existing:
+                df = pd.concat([df, pd.DataFrame([{'Date': d, **{t:False for t in TASKS}}])], ignore_index=True)
             d += timedelta(days=1)
         df['Date'] = pd.to_datetime(df['Date']).dt.date
         df = df[df['Date'] <= today]
@@ -352,7 +336,6 @@ def get_india_vix(period="5d"):
 # ───── SIDEBAR & NAVIGATION ─────
 with st.sidebar:
     st.markdown("## ⚡ AlphaQuant Terminal")
-    st.markdown("---")
     market_type = st.radio("Market", ["Crypto", "Indian Market"], horizontal=True,
                            index=0 if st.session_state['selected_market'] == 'Crypto' else 1,
                            key="market_radio")
@@ -419,7 +402,7 @@ if not hist_data.empty and all(c in hist_data.columns for c in ['High','Low','Cl
 
 selected_analysis = compute_full_analysis(hist_data, asset_spot, garch_vol, trading_days, park_vol, ivr_val)
 
-# ───── BTC & NIFTY DATA ─────
+# ───── BTC & NIFTY DATA FOR OVERVIEWS ─────
 btc_ticker = 'BTC-USD'
 btc_hist = fetch_long_hist(btc_ticker)
 btc_lp = live_price(btc_ticker)
@@ -475,6 +458,151 @@ if not any(s.get('date')==today_str and s.get('asset')=='Nifty 50' for s in snap
                    'spot':nifty_lp['spot'], 'garch_vol':nifty_garch, 'park_vol':nifty_park if nifty_park else 0.0,
                    'ivr':nifty_ivr if nifty_ivr else 0.0, 'daily_move': nifty_analysis['daily_move'] if nifty_analysis else 0})
     st.session_state['snapshots'] = load_snapshots()
+
+# ───── COMMON CHART FUNCTIONS (defined globally to avoid NameError) ─────
+def chart_correlation():
+    corr_tickers = ['BTC-USD','ETH-USD'] if selected_market=="Crypto" else ['^NSEI','^NSEBANK']
+    corr_data = yf_download_retry(corr_tickers, period="1y")['Close']
+    if corr_data.empty: return None
+    names = ("Bitcoin","Ethereum") if selected_market=="Crypto" else ("Nifty","Bank Nifty")
+    df = corr_data.dropna(); df.columns = names
+    norm = df / df.iloc[0] * 100
+    log_ret = np.log(df / df.shift(1)).dropna()
+    roll_corr = log_ret[names[0]].rolling(20).corr(log_ret[names[1]])
+    cur = roll_corr.iloc[-1]
+    fig, (ax1,ax2) = plt.subplots(2,1,figsize=(10,6), gridspec_kw={'height_ratios':[2,1]})
+    ax1.plot(norm.index, norm[names[0]], label=names[0])
+    ax1.plot(norm.index, norm[names[1]], label=names[1])
+    ax1.legend(); ax1.set_title("Correlation")
+    ax2.plot(roll_corr.index, roll_corr, color='white')
+    ax2.axhline(0.8,color='green',ls='--'); ax2.axhline(0.5,color='red',ls='--'); ax2.set_ylim(-0.2,1.1)
+    plt.tight_layout(); return fig
+
+def chart_expected_move():
+    iv_use = garch_vol
+    if selected_market == "Indian Market":
+        vix = get_india_vix("5d")
+        if vix is not None: iv_use = float(vix.iloc[-1])
+    recent_close = hist_data['Close'].squeeze().tail(20)
+    daily_vol = iv_use/100/np.sqrt(trading_days)
+    dm = asset_spot * daily_vol
+    wm = dm * np.sqrt(7)
+    fig, ax = plt.subplots(figsize=(10,5))
+    ax.plot(recent_close.index, recent_close.values, color='white')
+    last_idx = recent_close.index[-1]
+    next_d = last_idx + pd.Timedelta(days=1)
+    next_w = last_idx + pd.Timedelta(days=7)
+    ax.hlines(asset_spot+dm, last_idx, next_d, colors='cyan', linestyles='--')
+    ax.hlines(asset_spot-dm, last_idx, next_d, colors='cyan', linestyles='--')
+    ax.hlines(asset_spot+wm, last_idx, next_w, colors='orange', linestyles='--')
+    ax.hlines(asset_spot-wm, last_idx, next_w, colors='orange', linestyles='--')
+    ax.set_title("Expected Moves")
+    plt.tight_layout(); return fig
+
+def chart_hurst():
+    close = hist_data['Close'].squeeze()
+    log_p = np.log(close)
+    hurst_series = log_p.rolling(60).apply(lambda x: calculate_hurst_exponent(x) if len(x)>=20 else np.nan, raw=False)
+    df = pd.DataFrame({'Close':close,'Hurst':hurst_series}).dropna()
+    if df.empty: return None
+    fig, (ax1,ax2) = plt.subplots(2,1,figsize=(10,7), gridspec_kw={'height_ratios':[2,1]})
+    ax1.plot(df.index, df['Close'], color='white')
+    ax2.plot(df.index, df['Hurst'], color='cyan')
+    ax2.axhline(0.55,color='green',ls='--'); ax2.axhline(0.45,color='red',ls='--')
+    ax2.set_ylim(0.3,0.7)
+    return fig
+
+def chart_ivr():
+    close = hist_data['Close'].squeeze()
+    rolling_vol = np.log(close/close.shift(1)).dropna().rolling(20).std()*np.sqrt(252)*100
+    vol_series = rolling_vol.dropna()
+    cur = vol_series.iloc[-1]
+    vmin, vmax = vol_series.min(), vol_series.max()
+    ivr = ((cur-vmin)/(vmax-vmin))*100 if vmax!=vmin else 50
+    fig, ax = plt.subplots(figsize=(10,5))
+    ax.plot(vol_series.index, vol_series, color='cyan')
+    ax.axhline(vmax, color='red', ls='--'); ax.axhline(vmin, color='green', ls='--')
+    ax.set_title(f"IV Rank: {ivr:.0f}% | IV Percentile: {ivp_val:.0f}%")
+    return fig
+
+def chart_liquidity():
+    intra = yf_download_retry(ticker, period="5d", interval="30m")
+    if intra is None: return None
+    intra = flatten_df(intra).tail(60)
+    df = intra.copy()
+    df['Prev_High'] = df['High'].rolling(20).max().shift(1)
+    df['Prev_Low'] = df['Low'].rolling(20).min().shift(1)
+    df['Supply'] = (df['High']>df['Prev_High']) & (df['Close']<df['Prev_High'])
+    df['Demand'] = (df['Low']<df['Prev_Low']) & (df['Close']>df['Prev_Low'])
+    fig, ax = plt.subplots(figsize=(10,5))
+    ax.plot(df.index, df['Close'], color='white')
+    ax.scatter(df.index[df['Supply']], df['High'][df['Supply']]+10, color='red', marker='v')
+    ax.scatter(df.index[df['Demand']], df['Low'][df['Demand']]-10, color='green', marker='^')
+    return fig
+
+def chart_oi():
+    step = 500 if asset_spot>10000 else 50
+    base = round(asset_spot/step)*step
+    strikes = np.arange(base-8*step, base+9*step, step)
+    np.random.seed(int(asset_spot)%1234)
+    calls = np.random.randint(10,80,len(strikes))*50000
+    puts = np.random.randint(10,80,len(strikes))*50000
+    pain = {k: np.sum(np.maximum(0,k-strikes)*calls + np.maximum(0,strikes-k)*puts) for k in strikes}
+    max_pain = min(pain, key=pain.get)
+    fig, ax = plt.subplots(figsize=(12,7))
+    ax.barh(strikes, calls/1e5, color='red', alpha=0.8, label='Call OI')
+    ax.barh(strikes, -puts/1e5, color='green', alpha=0.8, label='Put OI')
+    ax.axhline(asset_spot, color='cyan', linewidth=2, label=f'Spot {asset_spot:,.0f}')
+    ax.axhline(max_pain, color='white', linestyle='--', label=f'Max Pain {max_pain}')
+    ax.legend(); ax.invert_yaxis(); return fig
+
+def chart_park():
+    high = hist_data['High'].squeeze().tail(60); low = hist_data['Low'].squeeze().tail(60)
+    park_val = calculate_parkinson_volatility(high,low,trading_days)
+    fig, ax = plt.subplots()
+    ax.bar(['Parkinson Vol'], [park_val], color='orange')
+    ax.set_ylabel('%'); ax.set_title(f"Parkinson Vol = {park_val:.1f}%")
+    return fig
+
+def chart_cone():
+    close = hist_data['Close'].squeeze()
+    log_ret = np.log(close/close.shift(1)).dropna()
+    windows = [10,20,30,60,90,120,180,252]
+    max_v,min_v,med_v,cur_v = [],[],[],[]
+    for w in windows:
+        rv = log_ret.rolling(w).std()*np.sqrt(trading_days)*100
+        if not rv.dropna().empty:
+            max_v.append(rv.max()); min_v.append(rv.min()); med_v.append(rv.median()); cur_v.append(rv.iloc[-1])
+    fig, ax = plt.subplots(figsize=(10,6))
+    ax.plot(windows, max_v, 'o-', color='red', label='Max')
+    ax.plot(windows, min_v, 'o-', color='green', label='Min')
+    ax.plot(windows, med_v, 's--', color='white', label='Median')
+    ax.plot(windows, cur_v, 'X-', color='yellow', markersize=10, label='Current')
+    ax.fill_between(windows, min_v, max_v, alpha=0.2)
+    ax.legend(); ax.set_xlabel("Window (days)"); ax.set_ylabel("Vol (%)")
+    return fig
+
+def chart_vrp():
+    close = hist_data['Close'].squeeze()
+    log_ret = np.log(close/close.shift(1)).dropna()
+    hv = log_ret.rolling(20).std()*np.sqrt(trading_days)*100
+    iv = garch_vol
+    if selected_market=="Indian Market":
+        v = get_india_vix("6mo")
+        if v is not None: iv_series = v; iv = v.iloc[-1]
+    else: iv_series = pd.Series([iv]*len(hv), index=hv.index)
+    common = hv.index.intersection(iv_series.index)
+    hv_c = hv[common]; iv_c = iv_series[common]
+    vrp = iv_c - hv_c
+    fig, (ax1,ax2) = plt.subplots(2,1,figsize=(10,6), gridspec_kw={'height_ratios':[2,1]})
+    ax1.plot(common, iv_c, color='cyan', label='Implied')
+    ax1.plot(common, hv_c, color='orange', label='Realised')
+    ax1.fill_between(common, hv_c, iv_c, where=(iv_c>hv_c), color='green', alpha=0.3)
+    ax1.fill_between(common, hv_c, iv_c, where=(iv_c<=hv_c), color='red', alpha=0.3)
+    ax1.legend(); ax1.set_title("Volatility Risk Premium")
+    colors = ['green' if v>0 else 'red' for v in vrp]
+    ax2.bar(common, vrp, color=colors); ax2.axhline(0, color='white')
+    return fig
 
 # ───── ROUTING TO TABS ─────
 if st.session_state['active_tab'] == "📊 Dashboard":
@@ -572,7 +700,7 @@ if st.session_state['active_tab'] == "📊 Dashboard":
         else:
             st.info("No weekly data available for this market.")
 
-    # Separate overviews & predictions
+    # ───── SEPARATE MARKET OVERVIEW, PREDICTION, AND SNAPSHOT ANALYSIS ─────
     col_left, col_right = st.columns(2)
     with col_left:
         with st.expander("₿ Crypto Market Overview & Prediction", expanded=True):
@@ -588,6 +716,26 @@ if st.session_state['active_tab'] == "📊 Dashboard":
                 st.markdown(f"**Tomorrow:** {'Trend continuation' if btc_analysis['regime']=='Trending' else 'Reversion' if btc_analysis['regime']=='Mean‑Reverting' else 'Rangebound'}")
             else:
                 st.warning("Data unavailable")
+        # Crypto snapshot analysis
+        with st.expander("📸 Crypto Daily Snapshots", expanded=False):
+            crypto_snaps = [s for s in st.session_state['snapshots'] if s.get('market') == 'Crypto']
+            if crypto_snaps:
+                df_c = pd.DataFrame(crypto_snaps)
+                df_c['date'] = pd.to_datetime(df_c['date'])
+                df_c = df_c.sort_values('date')
+                st.dataframe(df_c.tail(5)[['date','asset','spot','garch_vol','ivr']], use_container_width=True)
+                if len(df_c) >= 2:
+                    latest = df_c.iloc[-1]
+                    prev = df_c.iloc[-2]
+                    st.markdown(f"**Day‑over‑Day Change:** Spot {latest['spot']-prev['spot']:+.2f} ({(latest['spot']-prev['spot'])/prev['spot']*100:+.2f}%)")
+                fig, ax1 = plt.subplots(figsize=(10,4))
+                ax1.plot(df_c['date'], df_c['spot'], marker='o', color='white', label='Spot')
+                ax2 = ax1.twinx()
+                ax2.plot(df_c['date'], df_c['garch_vol'], marker='s', color='cyan', label='GARCH Vol')
+                ax1.legend(); plt.xticks(rotation=45)
+                st.pyplot(fig)
+            else:
+                st.info("No Crypto snapshots yet.")
 
     with col_right:
         with st.expander("🇮🇳 Indian Market Overview & Prediction", expanded=True):
@@ -603,36 +751,48 @@ if st.session_state['active_tab'] == "📊 Dashboard":
                 st.markdown(f"**Tomorrow:** {'Trend continuation' if nifty_analysis['regime']=='Trending' else 'Reversion' if nifty_analysis['regime']=='Mean‑Reverting' else 'Rangebound'}")
             else:
                 st.warning("Data unavailable")
+        # Indian snapshot analysis
+        with st.expander("📸 Indian Market Daily Snapshots", expanded=False):
+            indian_snaps = [s for s in st.session_state['snapshots'] if s.get('market') == 'Indian Market']
+            if indian_snaps:
+                df_i = pd.DataFrame(indian_snaps)
+                df_i['date'] = pd.to_datetime(df_i['date'])
+                df_i = df_i.sort_values('date')
+                st.dataframe(df_i.tail(5)[['date','asset','spot','garch_vol','ivr']], use_container_width=True)
+                if len(df_i) >= 2:
+                    latest = df_i.iloc[-1]
+                    prev = df_i.iloc[-2]
+                    st.markdown(f"**Day‑over‑Day Change:** Spot {latest['spot']-prev['spot']:+.2f} ({(latest['spot']-prev['spot'])/prev['spot']*100:+.2f}%)")
+                fig, ax1 = plt.subplots(figsize=(10,4))
+                ax1.plot(df_i['date'], df_i['spot'], marker='o', color='white', label='Spot')
+                ax2 = ax1.twinx()
+                ax2.plot(df_i['date'], df_i['garch_vol'], marker='s', color='cyan', label='GARCH Vol')
+                ax1.legend(); plt.xticks(rotation=45)
+                st.pyplot(fig)
+            else:
+                st.info("No Indian market snapshots yet.")
 
 elif st.session_state['active_tab'] == "📈 Technical":
     st.title("📈 Full Technical Analysis Suite")
     st.caption("All modules displayed together with a comprehensive summary.")
 
-    # ───── COMPREHENSIVE SUMMARY ─────
-    # Gather metrics from selected_analysis and additional on-the-fly calculations
+    # Combined summary
     if selected_analysis:
         summary_parts = []
-        # Regime & Bias
         summary_parts.append(f"**Market Regime:** {selected_analysis['regime']} (Hurst={selected_analysis['hurst']:.3f}), **Trend Bias:** {selected_analysis['bias']} (ADX={selected_analysis['adx']:.1f}).")
-        # Volatility
         summary_parts.append(f"**Volatility:** {selected_analysis['vol_regime']} (GARCH={garch_vol:.1f}%, Parkinson={park_vol:.1f}%). Expected daily move: ±{currency}{selected_analysis['daily_move']:,.2f}.")
-        # RSI
         rsi = selected_analysis['last_rsi']
         rsi_status = "Overbought" if rsi>70 else ("Oversold" if rsi<30 else "Neutral")
         summary_parts.append(f"**RSI(14):** {rsi:.1f} ({rsi_status}).")
-        # MACD
         macd_status = "Bullish cross" if selected_analysis['macd_bullish'] else "Bearish cross"
         summary_parts.append(f"**MACD:** {macd_status}.")
-        # SMA alignment
         sma_line = f"SMA20={selected_analysis['last_sma20']:,.2f}, SMA50={selected_analysis['last_sma50']:,.2f} → {'Bullish alignment' if selected_analysis['last_sma20'] > selected_analysis['last_sma50'] else 'Bearish alignment'}."
         summary_parts.append(sma_line)
-        # Volume
         summary_parts.append(f"**Volume:** {selected_analysis['vol_ratio']:.1f}x average.")
-        # IV Rank
         ivr_text = f"**IV Rank:** {ivr_val:.0f}% → {'High – favor selling premium' if ivr_val>65 else ('Low – favor buying premium' if ivr_val<30 else 'Moderate')}."
         summary_parts.append(ivr_text)
 
-        # Correlation (compute on the fly)
+        # Correlation
         corr_tickers = ['BTC-USD','ETH-USD'] if selected_market=="Crypto" else ['^NSEI','^NSEBANK']
         corr_data = yf_download_retry(corr_tickers, period="1y")['Close']
         if not corr_data.empty:
@@ -661,7 +821,7 @@ elif st.session_state['active_tab'] == "📈 Technical":
         else:
             summary_parts.append("**Liquidity Sweep:** Intraday data unavailable.")
 
-        # Max Pain (simulated)
+        # Max Pain
         step = 500 if asset_spot>10000 else 50
         base = round(asset_spot/step)*step
         strikes = np.arange(base-8*step, base+9*step, step)
@@ -671,8 +831,6 @@ elif st.session_state['active_tab'] == "📈 Technical":
         pain = {k: np.sum(np.maximum(0,k-strikes)*calls + np.maximum(0,strikes-k)*puts) for k in strikes}
         max_pain = min(pain, key=pain.get)
         summary_parts.append(f"**Max Pain (simulated):** {currency}{max_pain:,.0f}.")
-
-        # Volatility Cone and VRP short summary
         summary_parts.append("**Volatility Cone:** current vol position shown in chart below.")
         summary_parts.append("**VRP:** implied vs realised spread shown in chart below.")
 
@@ -680,172 +838,24 @@ elif st.session_state['active_tab'] == "📈 Technical":
         for line in summary_parts:
             st.markdown(f"- {line}")
 
-    # ───── DISPLAY ALL ANALYSIS CHARTS IN 2‑COLUMN GRID ─────
-    st.markdown("---")
-    st.subheader("Individual Analysis Modules")
+    # All charts in two‑column grid
     analysis_modules = [
-        ("Correlation Analysis", chart_correlation, "Correlation"),
-        ("Expected Daily & Weekly Move", chart_expected_move, "Expected Move"),
-        ("Hurst Exponent (Market Regime)", chart_hurst, "Hurst"),
-        ("IV Rank & IV Percentile", chart_ivr, "IVR/IVP"),
-        ("Liquidity Detector (Sweep)", chart_liquidity, "Liquidity"),
-        ("Open Interest Profile (Max Pain)", chart_oi, "OI Profile"),
-        ("Parkinson Volatility Estimator", chart_park, "Parkinson"),
-        ("Volatility Cone", chart_cone, "Vol Cone"),
-        ("Volatility Risk Premium (VRP)", chart_vrp, "VRP")
+        ("Correlation Analysis", chart_correlation),
+        ("Expected Daily & Weekly Move", chart_expected_move),
+        ("Hurst Exponent (Market Regime)", chart_hurst),
+        ("IV Rank & IV Percentile", chart_ivr),
+        ("Liquidity Detector (Sweep)", chart_liquidity),
+        ("Open Interest Profile (Max Pain)", chart_oi),
+        ("Parkinson Volatility Estimator", chart_park),
+        ("Volatility Cone", chart_cone),
+        ("Volatility Risk Premium (VRP)", chart_vrp)
     ]
-    # Define chart functions (same as before, but now defined here for reuse)
-    def chart_correlation():
-        corr_tickers = ['BTC-USD','ETH-USD'] if selected_market=="Crypto" else ['^NSEI','^NSEBANK']
-        corr_data = yf_download_retry(corr_tickers, period="1y")['Close']
-        if corr_data.empty: return None
-        names = ("Bitcoin","Ethereum") if selected_market=="Crypto" else ("Nifty","Bank Nifty")
-        df = corr_data.dropna(); df.columns = names
-        norm = df / df.iloc[0] * 100
-        log_ret = np.log(df / df.shift(1)).dropna()
-        roll_corr = log_ret[names[0]].rolling(20).corr(log_ret[names[1]])
-        cur = roll_corr.iloc[-1]
-        fig, (ax1,ax2) = plt.subplots(2,1,figsize=(10,6), gridspec_kw={'height_ratios':[2,1]})
-        ax1.plot(norm.index, norm[names[0]], label=names[0])
-        ax1.plot(norm.index, norm[names[1]], label=names[1])
-        ax1.legend(); ax1.set_title("Correlation")
-        ax2.plot(roll_corr.index, roll_corr, color='white')
-        ax2.axhline(0.8,color='green',ls='--'); ax2.axhline(0.5,color='red',ls='--'); ax2.set_ylim(-0.2,1.1)
-        plt.tight_layout(); return fig
-
-    def chart_expected_move():
-        iv_use = garch_vol
-        if selected_market == "Indian Market":
-            vix = get_india_vix("5d")
-            if vix is not None: iv_use = float(vix.iloc[-1])
-        recent_close = hist_data['Close'].squeeze().tail(20)
-        daily_vol = iv_use/100/np.sqrt(trading_days)
-        dm = asset_spot * daily_vol
-        wm = dm * np.sqrt(7)
-        fig, ax = plt.subplots(figsize=(10,5))
-        ax.plot(recent_close.index, recent_close.values, color='white')
-        last_idx = recent_close.index[-1]
-        next_d = last_idx + pd.Timedelta(days=1)
-        next_w = last_idx + pd.Timedelta(days=7)
-        ax.hlines(asset_spot+dm, last_idx, next_d, colors='cyan', linestyles='--')
-        ax.hlines(asset_spot-dm, last_idx, next_d, colors='cyan', linestyles='--')
-        ax.hlines(asset_spot+wm, last_idx, next_w, colors='orange', linestyles='--')
-        ax.hlines(asset_spot-wm, last_idx, next_w, colors='orange', linestyles='--')
-        ax.set_title("Expected Moves")
-        plt.tight_layout(); return fig
-
-    def chart_hurst():
-        close = hist_data['Close'].squeeze()
-        log_p = np.log(close)
-        hurst_series = log_p.rolling(60).apply(lambda x: calculate_hurst_exponent(x) if len(x)>=20 else np.nan, raw=False)
-        df = pd.DataFrame({'Close':close,'Hurst':hurst_series}).dropna()
-        if df.empty: return None
-        fig, (ax1,ax2) = plt.subplots(2,1,figsize=(10,7), gridspec_kw={'height_ratios':[2,1]})
-        ax1.plot(df.index, df['Close'], color='white')
-        ax2.plot(df.index, df['Hurst'], color='cyan')
-        ax2.axhline(0.55,color='green',ls='--'); ax2.axhline(0.45,color='red',ls='--')
-        ax2.set_ylim(0.3,0.7)
-        return fig
-
-    def chart_ivr():
-        close = hist_data['Close'].squeeze()
-        rolling_vol = np.log(close/close.shift(1)).dropna().rolling(20).std()*np.sqrt(252)*100
-        vol_series = rolling_vol.dropna()
-        cur = vol_series.iloc[-1]
-        vmin, vmax = vol_series.min(), vol_series.max()
-        ivr = ((cur-vmin)/(vmax-vmin))*100 if vmax!=vmin else 50
-        fig, ax = plt.subplots(figsize=(10,5))
-        ax.plot(vol_series.index, vol_series, color='cyan')
-        ax.axhline(vmax, color='red', ls='--'); ax.axhline(vmin, color='green', ls='--')
-        ax.set_title(f"IV Rank: {ivr:.0f}% | IV Percentile: {ivp_val:.0f}%")
-        return fig
-
-    def chart_liquidity():
-        intra = yf_download_retry(ticker, period="5d", interval="30m")
-        if intra is None: return None
-        intra = flatten_df(intra).tail(60)
-        df = intra.copy()
-        df['Prev_High'] = df['High'].rolling(20).max().shift(1)
-        df['Prev_Low'] = df['Low'].rolling(20).min().shift(1)
-        df['Supply'] = (df['High']>df['Prev_High']) & (df['Close']<df['Prev_High'])
-        df['Demand'] = (df['Low']<df['Prev_Low']) & (df['Close']>df['Prev_Low'])
-        fig, ax = plt.subplots(figsize=(10,5))
-        ax.plot(df.index, df['Close'], color='white')
-        ax.scatter(df.index[df['Supply']], df['High'][df['Supply']]+10, color='red', marker='v')
-        ax.scatter(df.index[df['Demand']], df['Low'][df['Demand']]-10, color='green', marker='^')
-        return fig
-
-    def chart_oi():
-        step = 500 if asset_spot>10000 else 50
-        base = round(asset_spot/step)*step
-        strikes = np.arange(base-8*step, base+9*step, step)
-        np.random.seed(int(asset_spot)%1234)
-        calls = np.random.randint(10,80,len(strikes))*50000
-        puts = np.random.randint(10,80,len(strikes))*50000
-        pain = {k: np.sum(np.maximum(0,k-strikes)*calls + np.maximum(0,strikes-k)*puts) for k in strikes}
-        max_pain = min(pain, key=pain.get)
-        fig, ax = plt.subplots(figsize=(12,7))
-        ax.barh(strikes, calls/1e5, color='red', alpha=0.8, label='Call OI')
-        ax.barh(strikes, -puts/1e5, color='green', alpha=0.8, label='Put OI')
-        ax.axhline(asset_spot, color='cyan', linewidth=2, label=f'Spot {asset_spot:,.0f}')
-        ax.axhline(max_pain, color='white', linestyle='--', label=f'Max Pain {max_pain}')
-        ax.legend(); ax.invert_yaxis(); return fig
-
-    def chart_park():
-        high = hist_data['High'].squeeze().tail(60); low = hist_data['Low'].squeeze().tail(60)
-        park_val = calculate_parkinson_volatility(high,low,trading_days)
-        fig, ax = plt.subplots()
-        ax.bar(['Parkinson Vol'], [park_val], color='orange')
-        ax.set_ylabel('%'); ax.set_title(f"Parkinson Vol = {park_val:.1f}%")
-        return fig
-
-    def chart_cone():
-        close = hist_data['Close'].squeeze()
-        log_ret = np.log(close/close.shift(1)).dropna()
-        windows = [10,20,30,60,90,120,180,252]
-        max_v,min_v,med_v,cur_v = [],[],[],[]
-        for w in windows:
-            rv = log_ret.rolling(w).std()*np.sqrt(trading_days)*100
-            if not rv.dropna().empty:
-                max_v.append(rv.max()); min_v.append(rv.min()); med_v.append(rv.median()); cur_v.append(rv.iloc[-1])
-        fig, ax = plt.subplots(figsize=(10,6))
-        ax.plot(windows, max_v, 'o-', color='red', label='Max')
-        ax.plot(windows, min_v, 'o-', color='green', label='Min')
-        ax.plot(windows, med_v, 's--', color='white', label='Median')
-        ax.plot(windows, cur_v, 'X-', color='yellow', markersize=10, label='Current')
-        ax.fill_between(windows, min_v, max_v, alpha=0.2)
-        ax.legend(); ax.set_xlabel("Window (days)"); ax.set_ylabel("Vol (%)")
-        return fig
-
-    def chart_vrp():
-        close = hist_data['Close'].squeeze()
-        log_ret = np.log(close/close.shift(1)).dropna()
-        hv = log_ret.rolling(20).std()*np.sqrt(trading_days)*100
-        iv = garch_vol
-        if selected_market=="Indian Market":
-            v = get_india_vix("6mo")
-            if v is not None: iv_series = v; iv = v.iloc[-1]
-        else: iv_series = pd.Series([iv]*len(hv), index=hv.index)
-        common = hv.index.intersection(iv_series.index)
-        hv_c = hv[common]; iv_c = iv_series[common]
-        vrp = iv_c - hv_c
-        fig, (ax1,ax2) = plt.subplots(2,1,figsize=(10,6), gridspec_kw={'height_ratios':[2,1]})
-        ax1.plot(common, iv_c, color='cyan', label='Implied')
-        ax1.plot(common, hv_c, color='orange', label='Realised')
-        ax1.fill_between(common, hv_c, iv_c, where=(iv_c>hv_c), color='green', alpha=0.3)
-        ax1.fill_between(common, hv_c, iv_c, where=(iv_c<=hv_c), color='red', alpha=0.3)
-        ax1.legend(); ax1.set_title("Volatility Risk Premium")
-        colors = ['green' if v>0 else 'red' for v in vrp]
-        ax2.bar(common, vrp, color=colors); ax2.axhline(0, color='white')
-        return fig
-
-    # Display in two columns
     for i in range(0, len(analysis_modules), 2):
         cols = st.columns(2)
         for j in range(2):
             idx = i + j
             if idx < len(analysis_modules):
-                name, func, short = analysis_modules[idx]
+                name, func = analysis_modules[idx]
                 with cols[j]:
                     with st.expander(f"📈 {name}", expanded=False):
                         try:
