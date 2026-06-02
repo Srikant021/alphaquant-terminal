@@ -1,4 +1,4 @@
-# AlphaQuant Terminal — Full Corrected Code (Indian Market Outlook Fixed)
+# AlphaQuant Terminal — Full Production Code with Dual Market Views & Habit Tracker
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +9,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import scipy.stats as si
 from arch import arch_model
-import requests, time, logging, yaml, os
+import requests, time, logging, yaml, os, calendar
 
 try:
     from xgboost import XGBClassifier
@@ -36,15 +36,17 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Session state
+# ───── SESSION STATE ─────
 for key, default in [
     ('live_mode', False), ('refresh_interval', 120), ('selected_market', 'Crypto'),
     ('paper_balance', 100000), ('paper_positions', []), ('auto_exit_enabled', True),
-    ('ml_model_trained', False), ('snapshots', []), ('chart_tf', '1D')
+    ('ml_model_trained', False), ('snapshots', []), ('chart_tf', '1D'),
+    ('active_tab', '📊 Dashboard'), ('habit_data', pd.DataFrame())
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
 
+# ───── CONFIG ─────
 CONFIG_PATH = "crypto_config.yaml"
 def load_config():
     default = {
@@ -85,6 +87,72 @@ def save_snapshot(snap_dict):
 if 'snapshots_loaded' not in st.session_state:
     load_snapshots()
     st.session_state['snapshots_loaded'] = True
+
+# ───── HABIT TRACKER SETUP ─────
+HABIT_FILE = "habit_tracker.csv"
+TASKS = [
+    "Pre Market Testing Range & Trend by 9:00",
+    "Global Market Check (IV/Oil/USDINR/US Market)",
+    "Attended PT Session",
+    "Paper/Real Trade Done",
+    "Mindfulness (Reading/Meditation)",
+    "Trading Journal Maintained",
+    "Goal Journaling"
+]
+def load_habit_data():
+    if os.path.exists(HABIT_FILE):
+        try:
+            df = pd.read_csv(HABIT_FILE, parse_dates=['Date'])
+            for task in TASKS:
+                if task not in df.columns:
+                    df[task] = False
+            if 'Score' not in df.columns:
+                df['Score'] = df[TASKS].sum(axis=1) / len(TASKS) * 100
+            return df
+        except Exception as e:
+            logger.error(f"Error loading habit data: {e}")
+            return pd.DataFrame(columns=['Date'] + TASKS + ['Score'])
+    else:
+        return pd.DataFrame(columns=['Date'] + TASKS + ['Score'])
+
+def save_habit_data(df):
+    df.to_csv(HABIT_FILE, index=False)
+
+def initialize_monthly_habit():
+    today = datetime.now().date()
+    year, month = today.year, today.month
+    df = st.session_state['habit_data']
+    if df.empty:
+        days_in_month = calendar.monthrange(year, month)[1]
+        all_dates = pd.date_range(start=datetime(year, month, 1), end=today, freq='D')
+        new_rows = []
+        for d in all_dates:
+            row = {'Date': d.date()}
+            for task in TASKS:
+                row[task] = False
+            new_rows.append(row)
+        df = pd.DataFrame(new_rows)
+    else:
+        existing_dates = set(pd.to_datetime(df['Date']).dt.date)
+        start_of_month = datetime(year, month, 1).date()
+        d = start_of_month
+        while d <= today:
+            if d not in existing_dates:
+                new_row = {'Date': d}
+                for task in TASKS:
+                    new_row[task] = False
+                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            d += timedelta(days=1)
+        df['Date'] = pd.to_datetime(df['Date']).dt.date
+        df = df[df['Date'] <= today]
+    df[TASKS] = df[TASKS].fillna(False).astype(bool)
+    df['Score'] = df[TASKS].sum(axis=1) / len(TASKS) * 100
+    st.session_state['habit_data'] = df
+    save_habit_data(df)
+
+if 'habit_data' not in st.session_state or st.session_state['habit_data'].empty:
+    st.session_state['habit_data'] = load_habit_data()
+initialize_monthly_habit()
 
 # ───── TECHNICAL INDICATORS ─────
 def compute_rsi(series, period=14):
@@ -154,10 +222,59 @@ def compute_volume_profile(df):
     last_vol = df['Volume'].iloc[-1]
     return last_vol, avg_vol
 
+def compute_full_analysis(hist_data, asset_spot, garch_vol, trading_days, park_vol, ivr_val):
+    """Compute all technical metrics and return a dict."""
+    if hist_data.empty or not all(c in hist_data.columns for c in ['Close','High','Low','Volume']):
+        return None
+    tech_df = hist_data[['Close','High','Low','Volume']].copy()
+    tech_df['RSI'] = compute_rsi(tech_df['Close'])
+    tech_df['MACD'], tech_df['Signal'], _ = compute_macd(tech_df['Close'])
+    tech_df['SMA20'] = tech_df['Close'].rolling(20).mean()
+    tech_df['SMA50'] = tech_df['Close'].rolling(50).mean()
+    adx = compute_trend_strength(tech_df['High'], tech_df['Low'], tech_df['Close'])
+    last_vol, avg_vol = compute_volume_profile(tech_df)
+    vol_ratio = last_vol / avg_vol if avg_vol > 0 else 1.0
+
+    last_rsi = tech_df['RSI'].iloc[-1]
+    last_macd = tech_df['MACD'].iloc[-1]
+    last_signal = tech_df['Signal'].iloc[-1]
+    last_sma20 = tech_df['SMA20'].iloc[-1]
+    last_sma50 = tech_df['SMA50'].iloc[-1]
+
+    log_p = np.log(tech_df['Close'])
+    hurst = calculate_hurst_exponent(log_p.values[-200:])
+    if np.isnan(hurst): regime = "Unknown"
+    elif hurst > 0.55: regime = "Trending"
+    elif hurst < 0.45: regime = "Mean‑Reverting"
+    else: regime = "Random Walk"
+
+    sma_alignment = (asset_spot > last_sma20) and (last_sma20 > last_sma50)
+    macd_bullish = last_macd > last_signal
+    trend_score = 0
+    if sma_alignment: trend_score += 2
+    if macd_bullish: trend_score += 1
+    if adx > 25: trend_score += 1
+    if trend_score >= 3: bias = "Bullish"
+    elif trend_score == 0: bias = "Bearish"
+    else: bias = "Neutral"
+
+    if garch_vol > 70: vol_regime = "High Volatility"
+    elif garch_vol < 30: vol_regime = "Low Volatility"
+    else: vol_regime = "Moderate"
+
+    daily_move = asset_spot * (garch_vol/100) * np.sqrt(1/trading_days)
+
+    return {
+        'adx': adx, 'last_rsi': last_rsi, 'last_macd': last_macd,
+        'last_signal': last_signal, 'last_sma20': last_sma20, 'last_sma50': last_sma50,
+        'vol_ratio': vol_ratio, 'regime': regime, 'bias': bias, 'vol_regime': vol_regime,
+        'hurst': hurst, 'macd_bullish': macd_bullish, 'daily_move': daily_move,
+        'park_vol': park_vol, 'garch_vol': garch_vol, 'ivr_val': ivr_val
+    }
+
 # ───── ML ─────
 def train_ml_model(close_px):
-    if not ML_AVAILABLE or len(close_px) < 150:
-        return False
+    if not ML_AVAILABLE or len(close_px) < 150: return False
     try:
         df = pd.DataFrame(close_px, columns=['close'])
         df['ret'] = df['close'].pct_change()
@@ -233,53 +350,57 @@ def get_india_vix(period="5d"):
     v = yf_download_retry("^INDIAVIX", period=period)['Close'].squeeze()
     return v if not v.empty else None
 
-@st.cache_data(ttl=300)
-def fetch_deribit_option_chain(coin="BTC"):
-    base="https://www.deribit.com/api/v2/public/"
-    try:
-        r=requests.get(base+"get_instruments",params={"currency":coin,"kind":"option","expired":"false"},timeout=10)
-        if r.status_code!=200: return None
-        instruments=r.json()['result']
-        option_data=[]
-        for inst in instruments[:50]:
-            name=inst['instrument_name']
-            r2=requests.get(base+"get_order_book",params={"instrument_name":name,"depth":1},timeout=5)
-            if r2.status_code==200:
-                book=r2.json()['result']
-                option_data.append({'instrument':name,'strike':inst['strike'],
-                    'option_type':'call' if 'C' in name.split('-')[-1] else 'put',
-                    'expiry':inst['expiration_timestamp'],'mark_iv':book.get('mark_iv',0),
-                    'underlying_price':book.get('underlying_price',0),
-                    'open_interest':book.get('open_interest',0),
-                    'delta':book.get('greeks',{}).get('delta',0),
-                    'gamma':book.get('greeks',{}).get('gamma',0),
-                    'theta':book.get('greeks',{}).get('theta',0),
-                    'vega':book.get('greeks',{}).get('vega',0)})
-        return pd.DataFrame(option_data)
-    except: return None
-
-# ───── HEADER ─────
-st.markdown('<div class="header-bar">', unsafe_allow_html=True)
-col1, col2, col3, col4 = st.columns([2,2,1,1])
-with col1:
-    market_type = st.radio("Market", ["Crypto","Indian"], horizontal=True, label_visibility="collapsed")
-    selected_market = "Crypto" if market_type == "Crypto" else "Indian Market"
-with col2:
-    if selected_market == "Crypto":
-        ticker_dict = CONFIG['cryptos']; trading_days=365; currency="$"
-    else:
-        ticker_dict = CONFIG['indian_market']; trading_days=252; currency="₹"
-    asset_choice = st.selectbox("Asset", list(ticker_dict.keys()), label_visibility="collapsed")
-    ticker = ticker_dict[asset_choice]
-with col3:
-    st.session_state['live_mode'] = st.checkbox("Live", value=st.session_state['live_mode'])
-with col4:
-    if st.button("Refresh"):
+# ───── SIDEBAR & NAVIGATION ─────
+with st.sidebar:
+    st.markdown("## ⚡ AlphaQuant Terminal")
+    st.markdown("---")
+    market_type = st.radio("Market", ["Crypto", "Indian Market"], horizontal=True,
+                           index=0 if st.session_state['selected_market'] == 'Crypto' else 1,
+                           key="market_radio")
+    if market_type != st.session_state['selected_market']:
+        st.session_state['selected_market'] = market_type
         st.cache_data.clear()
         st.rerun()
-st.markdown('</div>', unsafe_allow_html=True)
+    selected_market = st.session_state['selected_market']
 
-# ───── MAIN DATA ─────
+    if selected_market == "Crypto":
+        ticker_dict = CONFIG['cryptos']; trading_days = 365; currency = "$"
+    else:
+        ticker_dict = CONFIG['indian_market']; trading_days = 252; currency = "₹"
+
+    asset_choice = st.selectbox("Asset", list(ticker_dict.keys()), key="asset_select")
+    ticker = ticker_dict[asset_choice]
+
+    st.markdown("---")
+    tab_options = ["📊 Dashboard", "📈 Technical", "📓 Habit Tracker"]
+    active_tab = st.radio("Navigate", tab_options, index=tab_options.index(st.session_state['active_tab']))
+    if active_tab != st.session_state['active_tab']:
+        st.session_state['active_tab'] = active_tab
+        st.rerun()
+
+    st.markdown("---")
+    live_mode = st.checkbox("🟢 Live Mode", value=st.session_state['live_mode'])
+    if live_mode != st.session_state['live_mode']:
+        st.session_state['live_mode'] = live_mode
+
+    if ML_AVAILABLE:
+        with st.expander("🧠 ML Model"):
+            if st.button("Train ML Model"):
+                hist = fetch_long_hist(ticker)
+                if not hist.empty:
+                    close = hist['Close'].squeeze()
+                    if train_ml_model(close):
+                        st.success("Model trained!")
+                    else:
+                        st.warning("Insufficient data.")
+    st.markdown("---")
+    if st.button("🔄 Refresh All Data"):
+        st.cache_data.clear()
+        st.rerun()
+    st.caption("AlphaQuant Terminal Pro · For learning purposes only.")
+
+# ───── DATA LOADING ─────
+# Selected asset
 hist_data = fetch_long_hist(ticker)
 lp = live_price(ticker)
 if lp is None and not hist_data.empty:
@@ -298,370 +419,463 @@ if not hist_data.empty and all(c in hist_data.columns for c in ['High','Low','Cl
     park_vol = calculate_parkinson_volatility(high,low,periods_per_year=trading_days)
     ivr_val, ivp_val = calculate_iv_rank_percentile(close_px)
 
-iv_est = garch_vol / 100
-daily_move = asset_spot * iv_est * np.sqrt(1/trading_days)
-weekly_move = daily_move * np.sqrt(7)
+# Global analysis for selected asset
+selected_analysis = compute_full_analysis(hist_data, asset_spot, garch_vol, trading_days, park_vol, ivr_val)
 
-# ───── GLOBAL TECHNICAL ANALYSIS (used by both overview & prediction) ─────
-tech_analysis = {}
-if not hist_data.empty:
-    tech_df = hist_data[['Close','High','Low','Volume']].copy()
-    tech_df['RSI'] = compute_rsi(tech_df['Close'])
-    tech_df['MACD'], tech_df['Signal'], _ = compute_macd(tech_df['Close'])
-    tech_df['SMA20'] = tech_df['Close'].rolling(20).mean()
-    tech_df['SMA50'] = tech_df['Close'].rolling(50).mean()
-    adx = compute_trend_strength(tech_df['High'], tech_df['Low'], tech_df['Close'])
-    last_vol, avg_vol = compute_volume_profile(tech_df)
-    vol_ratio = last_vol / avg_vol if avg_vol > 0 else 1.0
+# Crypto representative (always BTC for overview)
+btc_ticker = 'BTC-USD'
+btc_hist = fetch_long_hist(btc_ticker)
+btc_lp = live_price(btc_ticker)
+if btc_lp is None and not btc_hist.empty:
+    close_btc = btc_hist['Close'].squeeze()
+    if len(close_btc) >= 2:
+        btc_spot = float(close_btc.iloc[-1]); btc_prev = float(close_btc.iloc[-2])
+        btc_lp = {'spot':btc_spot,'change':btc_spot-btc_prev,'pct':((btc_spot-btc_prev)/btc_prev)*100}
+    else: btc_lp = {'spot':0,'change':0,'pct':0}
+btc_garch, _ = garch_both(btc_ticker)
+btc_park = None; btc_ivr = None
+if not btc_hist.empty and all(c in btc_hist.columns for c in ['High','Low','Close']):
+    high_btc = btc_hist['High'].squeeze().tail(60); low_btc = btc_hist['Low'].squeeze().tail(60)
+    close_btc_px = btc_hist['Close'].squeeze().tail(60)
+    btc_park = calculate_parkinson_volatility(high_btc, low_btc, periods_per_year=365)
+    btc_ivr, _ = calculate_iv_rank_percentile(close_btc_px)
+btc_analysis = compute_full_analysis(btc_hist, btc_lp['spot'], btc_garch, 365, btc_park, btc_ivr)
 
-    last_rsi = tech_df['RSI'].iloc[-1]
-    last_macd = tech_df['MACD'].iloc[-1]
-    last_signal = tech_df['Signal'].iloc[-1]
-    last_sma20 = tech_df['SMA20'].iloc[-1]
-    last_sma50 = tech_df['SMA50'].iloc[-1]
+# Indian representative (always Nifty)
+nifty_ticker = '^NSEI'
+nifty_hist = fetch_long_hist(nifty_ticker)
+nifty_lp = live_price(nifty_ticker)
+if nifty_lp is None and not nifty_hist.empty:
+    close_nifty = nifty_hist['Close'].squeeze()
+    if len(close_nifty) >= 2:
+        nifty_spot = float(close_nifty.iloc[-1]); nifty_prev = float(close_nifty.iloc[-2])
+        nifty_lp = {'spot':nifty_spot,'change':nifty_spot-nifty_prev,'pct':((nifty_spot-nifty_prev)/nifty_prev)*100}
+    else: nifty_lp = {'spot':0,'change':0,'pct':0}
+nifty_garch, _ = garch_both(nifty_ticker)
+nifty_park = None; nifty_ivr = None
+if not nifty_hist.empty and all(c in nifty_hist.columns for c in ['High','Low','Close']):
+    high_nifty = nifty_hist['High'].squeeze().tail(60); low_nifty = nifty_hist['Low'].squeeze().tail(60)
+    close_nifty_px = nifty_hist['Close'].squeeze().tail(60)
+    nifty_park = calculate_parkinson_volatility(high_nifty, low_nifty, periods_per_year=252)
+    nifty_ivr, _ = calculate_iv_rank_percentile(close_nifty_px)
+nifty_analysis = compute_full_analysis(nifty_hist, nifty_lp['spot'], nifty_garch, 252, nifty_park, nifty_ivr)
 
-    log_p = np.log(tech_df['Close'])
-    hurst = calculate_hurst_exponent(log_p.values[-200:])
-    if np.isnan(hurst): regime = "Unknown"
-    elif hurst > 0.55: regime = "Trending"
-    elif hurst < 0.45: regime = "Mean‑Reverting"
-    else: regime = "Random Walk"
-
-    sma_alignment = (asset_spot > last_sma20) and (last_sma20 > last_sma50)
-    macd_bullish = last_macd > last_signal
-    trend_score = 0
-    if sma_alignment: trend_score += 2
-    if macd_bullish: trend_score += 1
-    if adx > 25: trend_score += 1
-    if trend_score >= 3: bias = "Bullish"
-    elif trend_score == 0: bias = "Bearish"
-    else: bias = "Neutral"
-
-    if garch_vol > 70: vol_regime = "High Volatility"
-    elif garch_vol < 30: vol_regime = "Low Volatility"
-    else: vol_regime = "Moderate"
-
-    tech_analysis = {
-        'adx': adx, 'last_rsi': last_rsi, 'last_macd': last_macd,
-        'last_signal': last_signal, 'last_sma20': last_sma20, 'last_sma50': last_sma50,
-        'vol_ratio': vol_ratio, 'regime': regime, 'bias': bias, 'vol_regime': vol_regime,
-        'hurst': hurst, 'macd_bullish': macd_bullish
-    }
-
-# Auto‑snapshot for selected asset
+# Auto‑save snapshots
 today_str = datetime.now().strftime('%Y-%m-%d')
 snaps = st.session_state['snapshots']
+# Save for selected asset if not already
 if not any(s.get('date')==today_str and s.get('market')==selected_market and s.get('asset')==asset_choice for s in snaps):
-    save_snapshot({
-        'date': today_str, 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'asset': asset_choice, 'market': selected_market,
-        'spot': asset_spot, 'garch_vol': garch_vol, 'park_vol': park_vol if park_vol else 0.0,
-        'ivr': ivr_val if ivr_val else 0.0, 'ivp': ivp_val if ivp_val else 0.0,
-        'daily_move': daily_move
-    })
+    save_snapshot({'date':today_str, 'asset':asset_choice, 'market':selected_market,
+                   'spot':asset_spot, 'garch_vol':garch_vol, 'park_vol':park_vol if park_vol else 0.0,
+                   'ivr':ivr_val if ivr_val else 0.0, 'ivp':ivp_val if ivp_val else 0.0,
+                   'daily_move': selected_analysis['daily_move'] if selected_analysis else 0})
+    st.session_state['snapshots'] = load_snapshots()
+# Save for BTC
+if not any(s.get('date')==today_str and s.get('asset')=='Bitcoin' for s in snaps):
+    save_snapshot({'date':today_str, 'asset':'Bitcoin', 'market':'Crypto',
+                   'spot':btc_lp['spot'], 'garch_vol':btc_garch, 'park_vol':btc_park if btc_park else 0.0,
+                   'ivr':btc_ivr if btc_ivr else 0.0, 'daily_move': btc_analysis['daily_move'] if btc_analysis else 0})
+    st.session_state['snapshots'] = load_snapshots()
+# Save for Nifty
+if not any(s.get('date')==today_str and s.get('asset')=='Nifty 50' for s in snaps):
+    save_snapshot({'date':today_str, 'asset':'Nifty 50', 'market':'Indian Market',
+                   'spot':nifty_lp['spot'], 'garch_vol':nifty_garch, 'park_vol':nifty_park if nifty_park else 0.0,
+                   'ivr':nifty_ivr if nifty_ivr else 0.0, 'daily_move': nifty_analysis['daily_move'] if nifty_analysis else 0})
     st.session_state['snapshots'] = load_snapshots()
 
-# Cross‑market
-other_market = "Indian Market" if selected_market=="Crypto" else "Crypto"
-other_ticker = "^NSEI" if selected_market=="Crypto" else "BTC-USD"
-other_name = "Nifty 50" if selected_market=="Crypto" else "Bitcoin"
-other_currency = "₹" if selected_market=="Crypto" else "$"
-other_trading_days = 252 if selected_market=="Crypto" else 365
+# ───── ROUTING TO TABS ─────
+if st.session_state['active_tab'] == "📊 Dashboard":
+    st.title("📊 Market Intelligence Dashboard")
 
-other_lp = live_price(other_ticker)
-other_hist = fetch_long_hist(other_ticker)
-if other_lp is None and not other_hist.empty:
-    close_o = other_hist['Close'].squeeze()
-    if len(close_o) >= 2:
-        spot_o = float(close_o.iloc[-1]); prev_o = float(close_o.iloc[-2])
-        other_lp = {'spot':spot_o,'prev_close':prev_o,'change':spot_o-prev_o,'pct':((spot_o-prev_o)/prev_o)*100 if prev_o else 0,'ts':'hist'}
-    else:
-        other_lp = {'spot':0,'prev_close':0,'change':0,'pct':0,'ts':'unavail'}
-other_spot = other_lp['spot']
-other_garch, _ = garch_both(other_ticker)
-if not any(s.get('date')==today_str and s.get('market')==other_market for s in snaps):
-    other_park = None; other_ivr = None; other_ivp = None
-    if not other_hist.empty and all(c in other_hist.columns for c in ['High','Low','Close']):
-        h_o = other_hist['High'].squeeze().tail(60); l_o = other_hist['Low'].squeeze().tail(60); c_o = other_hist['Close'].squeeze().tail(60)
-        other_park = calculate_parkinson_volatility(h_o,l_o,periods_per_year=other_trading_days)
-        other_ivr, other_ivp = calculate_iv_rank_percentile(c_o)
-    save_snapshot({
-        'date': today_str, 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'asset': other_name, 'market': other_market,
-        'spot': other_spot, 'garch_vol': other_garch, 'park_vol': other_park if other_park else 0.0,
-        'ivr': other_ivr if other_ivr else 0.0, 'ivp': other_ivp if other_ivp else 0.0,
-        'daily_move': other_spot * (other_garch/100) * np.sqrt(1/other_trading_days)
-    })
-    st.session_state['snapshots'] = load_snapshots()
+    # Multi‑timeframe chart (unchanged)
+    st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+    tf = st.radio("Chart Timeframe", ["1D", "5m", "15m", "1h"], horizontal=True, key="chart_tf")
+    with st.spinner(f"Loading {tf} chart..."):
+        if tf == "1D":
+            df_chart = yf_download_retry(ticker, period="6mo", interval="1d")
+            if not df_chart.empty:
+                df_chart = flatten_df(df_chart).tail(60)
+                bb_upper, _, bb_lower = compute_bbands(df_chart['Close'])
+                fig_main = make_subplots(specs=[[{"secondary_y": False}]])
+                fig_main.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
+                                                  low=df_chart['Low'], close=df_chart['Close'], name='Price'))
+                fig_main.add_trace(go.Scatter(x=df_chart.index, y=bb_upper, line=dict(color='gray',width=1,dash='dot'), name='BB Upper'))
+                fig_main.add_trace(go.Scatter(x=df_chart.index, y=bb_lower, line=dict(color='gray',width=1,dash='dot'), name='BB Lower'))
+                fig_main.update_layout(template='plotly_dark', height=500,
+                                       title=f"{asset_choice} — Daily (last 60 days)",
+                                       xaxis_rangeslider_visible=False, hovermode='x unified')
+                st.plotly_chart(fig_main, width='stretch')
+            else: st.warning("Daily data unavailable.")
+        else:
+            df_chart = yf_download_retry(ticker, period="5d" if tf in ["5m","15m"] else "1mo", interval=tf)
+            if not df_chart.empty:
+                df_chart = flatten_df(df_chart).tail(100)
+                bb_upper, _, bb_lower = compute_bbands(df_chart['Close'])
+                fig_main = make_subplots(specs=[[{"secondary_y": False}]])
+                fig_main.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
+                                                  low=df_chart['Low'], close=df_chart['Close'], name='Price'))
+                fig_main.add_trace(go.Scatter(x=df_chart.index, y=bb_upper, line=dict(color='gray',width=1,dash='dot'), name='BB Upper'))
+                fig_main.add_trace(go.Scatter(x=df_chart.index, y=bb_lower, line=dict(color='gray',width=1,dash='dot'), name='BB Lower'))
+                daily_move_ = selected_analysis['daily_move'] if selected_analysis else 0
+                fig_main.add_hline(y=asset_spot + daily_move_, line_dash="dash", line_color="cyan", annotation_text="Daily Upper")
+                fig_main.add_hline(y=asset_spot - daily_move_, line_dash="dash", line_color="cyan", annotation_text="Daily Lower")
+                fig_main.update_layout(template='plotly_dark', height=500,
+                                       title=f"{asset_choice} — {tf} Chart",
+                                       xaxis_rangeslider_visible=False, hovermode='x unified')
+                st.plotly_chart(fig_main, width='stretch')
+            else: st.warning(f"Could not load {tf} data.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-# ───── SIDEBAR ─────
-with st.sidebar:
-    st.markdown("### Watchlist")
-    for name, tkr in ticker_dict.items():
-        try:
-            live = live_price(tkr)
-            if live:
-                spot, chg = live['spot'], live['change']
-                col1, col2 = st.columns([3,1])
-                col1.markdown(f"**{name}**  {currency}{spot:,.2f}")
-                col2.markdown(f"<span style='color:{'#00C48C' if chg>=0 else '#FF4D4D'}'>{chg:+.2f}</span>", unsafe_allow_html=True)
+    # Metrics row
+    st.markdown('<div class="metric-row">', unsafe_allow_html=True)
+    cols = st.columns(5)
+    metrics = [
+        ("Spot", f"{currency}{asset_spot:,.2f}", f"{lp['change']:+.2f} ({lp['pct']:+.2f}%)"),
+        ("GARCH Vol", f"{garch_vol:.1f}%", "1-day forecast"),
+        ("Parkinson", f"{park_vol:.1f}%" if park_vol else "N/A", "High-Low"),
+        ("IV Rank", f"{ivr_val:.0f}%" if ivr_val else "N/A", "Sell >65, Buy <30"),
+        ("IV Percentile", f"{ivp_val:.0f}%" if ivp_val else "N/A", "vs 1yr")
+    ]
+    for i, (label, value, sub) in enumerate(metrics):
+        with cols[i]:
+            st.markdown(f'''<div class="metric-card">
+                <div class="label">{label}</div>
+                <div class="value">{value}</div>
+                <div class="sub">{sub}</div>
+            </div>''', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Cross‑market comparison
+    with st.expander("🌐 Cross‑Market Comparison", expanded=True):
+        st.markdown(f"### {asset_choice} ({selected_market}) vs Bitcoin / Nifty")
+        col_c1, col_c2, col_c3 = st.columns(3)
+        col_c1.metric("Bitcoin Spot", f"${btc_lp['spot']:,.2f}", f"{btc_lp['change']:+.2f} ({btc_lp['pct']:+.2f}%)")
+        col_c2.metric("Nifty Spot", f"₹{nifty_lp['spot']:,.2f}", f"{nifty_lp['change']:+.2f} ({nifty_lp['pct']:+.2f}%)")
+        col_c3.metric(asset_choice, f"{currency}{asset_spot:,.2f}", f"{lp['change']:+.2f} ({lp['pct']:+.2f}%)")
+        # GARCH comparison
+        col_g1, col_g2, col_g3 = st.columns(3)
+        col_g1.metric("BTC GARCH", f"{btc_garch:.1f}%")
+        col_g2.metric("Nifty GARCH", f"{nifty_garch:.1f}%")
+        col_g3.metric(f"{asset_choice} GARCH", f"{garch_vol:.1f}%")
+
+    # Separate overviews & predictions for Crypto and Indian
+    col_left, col_right = st.columns(2)
+    with col_left:
+        with st.expander("₿ Crypto Market Overview & Prediction", expanded=True):
+            if btc_analysis:
+                st.subheader("📊 Overview")
+                st.markdown(f"**Regime:** {btc_analysis['regime']} (Hurst {btc_analysis['hurst']:.3f})")
+                st.markdown(f"**Trend Bias:** {btc_analysis['bias']} (ADX {btc_analysis['adx']:.1f})")
+                st.markdown(f"**Volatility:** {btc_analysis['vol_regime']} (GARCH {btc_garch:.1f}%)")
+                st.markdown(f"**RSI:** {btc_analysis['last_rsi']:.1f}")
+                st.markdown(f"**Expected Move:** ±${btc_analysis['daily_move']:,.2f}")
+                st.subheader("🔮 Prediction")
+                st.markdown(f"**Today:** {'Bullish' if btc_analysis['bias']=='Bullish' else 'Bearish' if btc_analysis['bias']=='Bearish' else 'Neutral'}")
+                st.markdown(f"**Tomorrow:** {'Trend continuation' if btc_analysis['regime']=='Trending' else 'Reversion' if btc_analysis['regime']=='Mean‑Reverting' else 'Rangebound'}")
             else:
-                st.text(f"{name} --")
-        except:
-            st.text(f"{name} --")
-    st.markdown("---")
-    if ML_AVAILABLE and st.button("Train ML Model"):
-        if not hist_data.empty:
-            close = hist_data['Close'].squeeze()
-            if train_ml_model(close):
-                st.success("Model trained!")
+                st.warning("Data unavailable")
+
+    with col_right:
+        with st.expander("🇮🇳 Indian Market Overview & Prediction", expanded=True):
+            if nifty_analysis:
+                st.subheader("📊 Overview")
+                st.markdown(f"**Regime:** {nifty_analysis['regime']} (Hurst {nifty_analysis['hurst']:.3f})")
+                st.markdown(f"**Trend Bias:** {nifty_analysis['bias']} (ADX {nifty_analysis['adx']:.1f})")
+                st.markdown(f"**Volatility:** {nifty_analysis['vol_regime']} (GARCH {nifty_garch:.1f}%)")
+                st.markdown(f"**RSI:** {nifty_analysis['last_rsi']:.1f}")
+                st.markdown(f"**Expected Move:** ±₹{nifty_analysis['daily_move']:,.2f}")
+                st.subheader("🔮 Prediction")
+                st.markdown(f"**Today:** {'Bullish' if nifty_analysis['bias']=='Bullish' else 'Bearish' if nifty_analysis['bias']=='Bearish' else 'Neutral'}")
+                st.markdown(f"**Tomorrow:** {'Trend continuation' if nifty_analysis['regime']=='Trending' else 'Reversion' if nifty_analysis['regime']=='Mean‑Reverting' else 'Rangebound'}")
             else:
-                st.warning("Insufficient data.")
-    st.markdown("---")
-    st.caption(f"📸 Auto‑saved snapshots for {today_str}")
+                st.warning("Data unavailable")
 
-# ───── MULTI‑TIMEFRAME CHART ─────
-st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-tf = st.radio("Chart Timeframe", ["1D", "5m", "15m", "1h"], horizontal=True, key="chart_tf")
-with st.spinner(f"Loading {tf} chart..."):
-    if tf == "1D":
-        df_chart = yf_download_retry(ticker, period="6mo", interval="1d")
-        if not df_chart.empty:
-            df_chart = flatten_df(df_chart).tail(60)
-            bb_upper, _, bb_lower = compute_bbands(df_chart['Close'])
-            fig_main = make_subplots(specs=[[{"secondary_y": False}]])
-            fig_main.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
-                                              low=df_chart['Low'], close=df_chart['Close'], name='Price'))
-            fig_main.add_trace(go.Scatter(x=df_chart.index, y=bb_upper, line=dict(color='gray',width=1,dash='dot'), name='BB Upper'))
-            fig_main.add_trace(go.Scatter(x=df_chart.index, y=bb_lower, line=dict(color='gray',width=1,dash='dot'), name='BB Lower'))
-            fig_main.update_layout(template='plotly_dark', height=500,
-                                   title=f"{asset_choice} — Daily (last 60 days)",
-                                   xaxis_rangeslider_visible=False, hovermode='x unified')
-            st.plotly_chart(fig_main, width='stretch')
-        else: st.warning("Daily data unavailable.")
+elif st.session_state['active_tab'] == "📈 Technical":
+    st.title("📈 Technical Analysis")
+    # ───── DETAILED ANALYTICS (all nine) ─────
+    analysis_modules = [
+        "Correlation Analysis",
+        "Expected Daily & Weekly Move",
+        "Hurst Exponent (Market Regime)",
+        "IV Rank & IV Percentile",
+        "Liquidity Detector (Sweep)",
+        "Open Interest Profile (Max Pain)",
+        "Parkinson Volatility Estimator",
+        "Volatility Cone",
+        "Volatility Risk Premium (VRP)"
+    ]
+    selected_module = st.selectbox("📊 Detailed Analytics", analysis_modules)
+
+    def show_module(title, explanation, fig):
+        st.markdown(f"## {title}")
+        st.markdown(explanation)
+        if fig: st.pyplot(fig)
+        else: st.warning("Chart could not be generated.")
+
+    # Full chart functions
+    def chart_correlation():
+        corr_tickers = ['BTC-USD','ETH-USD'] if selected_market=="Crypto" else ['^NSEI','^NSEBANK']
+        corr_data = yf_download_retry(corr_tickers, period="1y")['Close']
+        if corr_data.empty: return None
+        names = ("Bitcoin","Ethereum") if selected_market=="Crypto" else ("Nifty","Bank Nifty")
+        df = corr_data.dropna(); df.columns = names
+        norm = df / df.iloc[0] * 100
+        log_ret = np.log(df / df.shift(1)).dropna()
+        roll_corr = log_ret[names[0]].rolling(20).corr(log_ret[names[1]])
+        cur = roll_corr.iloc[-1]
+        fig, (ax1,ax2) = plt.subplots(2,1,figsize=(12,7), gridspec_kw={'height_ratios':[2,1]})
+        ax1.plot(norm.index, norm[names[0]], label=names[0])
+        ax1.plot(norm.index, norm[names[1]], label=names[1])
+        ax1.legend(); ax1.set_title("Correlation")
+        ax2.plot(roll_corr.index, roll_corr, color='white')
+        ax2.axhline(0.8,color='green',ls='--'); ax2.axhline(0.5,color='red',ls='--'); ax2.set_ylim(-0.2,1.1)
+        plt.tight_layout(); return fig
+
+    def chart_expected_move():
+        iv_use = garch_vol
+        if selected_market == "Indian Market":
+            vix = get_india_vix("5d")
+            if vix is not None: iv_use = float(vix.iloc[-1])
+        recent_close = hist_data['Close'].squeeze().tail(20)
+        daily_vol = iv_use/100/np.sqrt(trading_days)
+        dm = asset_spot * daily_vol
+        wm = dm * np.sqrt(7)
+        fig, ax = plt.subplots(figsize=(12,6))
+        ax.plot(recent_close.index, recent_close.values, color='white')
+        last_idx = recent_close.index[-1]
+        next_d = last_idx + pd.Timedelta(days=1)
+        next_w = last_idx + pd.Timedelta(days=7)
+        ax.hlines(asset_spot+dm, last_idx, next_d, colors='cyan', linestyles='--')
+        ax.hlines(asset_spot-dm, last_idx, next_d, colors='cyan', linestyles='--')
+        ax.hlines(asset_spot+wm, last_idx, next_w, colors='orange', linestyles='--')
+        ax.hlines(asset_spot-wm, last_idx, next_w, colors='orange', linestyles='--')
+        ax.set_title("Expected Moves")
+        plt.tight_layout(); return fig
+
+    def chart_hurst():
+        close = hist_data['Close'].squeeze()
+        log_p = np.log(close)
+        hurst_series = log_p.rolling(60).apply(lambda x: calculate_hurst_exponent(x) if len(x)>=20 else np.nan, raw=False)
+        df = pd.DataFrame({'Close':close,'Hurst':hurst_series}).dropna()
+        if df.empty: return None
+        fig, (ax1,ax2) = plt.subplots(2,1,figsize=(12,8), gridspec_kw={'height_ratios':[2,1]})
+        ax1.plot(df.index, df['Close'], color='white')
+        ax2.plot(df.index, df['Hurst'], color='cyan')
+        ax2.axhline(0.55,color='green',ls='--'); ax2.axhline(0.45,color='red',ls='--')
+        ax2.set_ylim(0.3,0.7)
+        return fig
+
+    def chart_ivr():
+        close = hist_data['Close'].squeeze()
+        rolling_vol = np.log(close/close.shift(1)).dropna().rolling(20).std()*np.sqrt(252)*100
+        vol_series = rolling_vol.dropna()
+        cur = vol_series.iloc[-1]
+        vmin, vmax = vol_series.min(), vol_series.max()
+        ivr = ((cur-vmin)/(vmax-vmin))*100 if vmax!=vmin else 50
+        fig, ax = plt.subplots(figsize=(12,6))
+        ax.plot(vol_series.index, vol_series, color='cyan')
+        ax.axhline(vmax, color='red', ls='--'); ax.axhline(vmin, color='green', ls='--')
+        ax.set_title(f"IV Rank: {ivr:.0f}% | IV Percentile: {ivp_val:.0f}%")
+        return fig
+
+    def chart_liquidity():
+        intra = yf_download_retry(ticker, period="5d", interval="30m")
+        if intra is None: return None
+        intra = flatten_df(intra).tail(60)
+        df = intra.copy()
+        df['Prev_High'] = df['High'].rolling(20).max().shift(1)
+        df['Prev_Low'] = df['Low'].rolling(20).min().shift(1)
+        df['Supply'] = (df['High']>df['Prev_High']) & (df['Close']<df['Prev_High'])
+        df['Demand'] = (df['Low']<df['Prev_Low']) & (df['Close']>df['Prev_Low'])
+        fig, ax = plt.subplots(figsize=(12,6))
+        ax.plot(df.index, df['Close'], color='white')
+        ax.scatter(df.index[df['Supply']], df['High'][df['Supply']]+10, color='red', marker='v')
+        ax.scatter(df.index[df['Demand']], df['Low'][df['Demand']]-10, color='green', marker='^')
+        return fig
+
+    def chart_oi():
+        step = 500 if asset_spot>10000 else 50
+        base = round(asset_spot/step)*step
+        strikes = np.arange(base-8*step, base+9*step, step)
+        np.random.seed(int(asset_spot)%1234)
+        calls = np.random.randint(10,80,len(strikes))*50000
+        puts = np.random.randint(10,80,len(strikes))*50000
+        pain = {k: np.sum(np.maximum(0,k-strikes)*calls + np.maximum(0,strikes-k)*puts) for k in strikes}
+        max_pain = min(pain, key=pain.get)
+        fig, ax = plt.subplots(figsize=(14,8))
+        ax.barh(strikes, calls/1e5, color='red', alpha=0.8, label='Call OI')
+        ax.barh(strikes, -puts/1e5, color='green', alpha=0.8, label='Put OI')
+        ax.axhline(asset_spot, color='cyan', linewidth=2, label=f'Spot {asset_spot:,.0f}')
+        ax.axhline(max_pain, color='white', linestyle='--', label=f'Max Pain {max_pain}')
+        ax.legend(); ax.invert_yaxis(); return fig
+
+    def chart_park():
+        high = hist_data['High'].squeeze().tail(60); low = hist_data['Low'].squeeze().tail(60)
+        park_val = calculate_parkinson_volatility(high,low,trading_days)
+        fig, ax = plt.subplots()
+        ax.bar(['Parkinson Vol'], [park_val], color='orange')
+        ax.set_ylabel('%'); ax.set_title(f"Parkinson Vol = {park_val:.1f}%")
+        return fig
+
+    def chart_cone():
+        close = hist_data['Close'].squeeze()
+        log_ret = np.log(close/close.shift(1)).dropna()
+        windows = [10,20,30,60,90,120,180,252]
+        max_v,min_v,med_v,cur_v = [],[],[],[]
+        for w in windows:
+            rv = log_ret.rolling(w).std()*np.sqrt(trading_days)*100
+            if not rv.dropna().empty:
+                max_v.append(rv.max()); min_v.append(rv.min()); med_v.append(rv.median()); cur_v.append(rv.iloc[-1])
+        fig, ax = plt.subplots(figsize=(12,7))
+        ax.plot(windows, max_v, 'o-', color='red', label='Max')
+        ax.plot(windows, min_v, 'o-', color='green', label='Min')
+        ax.plot(windows, med_v, 's--', color='white', label='Median')
+        ax.plot(windows, cur_v, 'X-', color='yellow', markersize=10, label='Current')
+        ax.fill_between(windows, min_v, max_v, alpha=0.2)
+        ax.legend(); ax.set_xlabel("Window (days)"); ax.set_ylabel("Vol (%)")
+        return fig
+
+    def chart_vrp():
+        close = hist_data['Close'].squeeze()
+        log_ret = np.log(close/close.shift(1)).dropna()
+        hv = log_ret.rolling(20).std()*np.sqrt(trading_days)*100
+        iv = garch_vol
+        if selected_market=="Indian Market":
+            v = get_india_vix("6mo")
+            if v is not None: iv_series = v; iv = v.iloc[-1]
+        else: iv_series = pd.Series([iv]*len(hv), index=hv.index)
+        common = hv.index.intersection(iv_series.index)
+        hv_c = hv[common]; iv_c = iv_series[common]
+        vrp = iv_c - hv_c
+        fig, (ax1,ax2) = plt.subplots(2,1,figsize=(12,7), gridspec_kw={'height_ratios':[2,1]})
+        ax1.plot(common, iv_c, color='cyan', label='Implied')
+        ax1.plot(common, hv_c, color='orange', label='Realised')
+        ax1.fill_between(common, hv_c, iv_c, where=(iv_c>hv_c), color='green', alpha=0.3)
+        ax1.fill_between(common, hv_c, iv_c, where=(iv_c<=hv_c), color='red', alpha=0.3)
+        ax1.legend(); ax1.set_title("Volatility Risk Premium")
+        colors = ['green' if v>0 else 'red' for v in vrp]
+        ax2.bar(common, vrp, color=colors); ax2.axhline(0, color='white')
+        return fig
+
+    # Explanations
+    explanations = {
+        "Correlation Analysis": """**Correlation Analysis** measures how closely two assets move together.
+        - Above 0.8 → high lockstep; trend‑following works.
+        - Below 0.5 → decoupling; favour neutral strategies.""",
+        "Expected Daily & Weekly Move": """**Expected Moves** project the ±1σ range for the next day and week.
+        - Daily move = Spot × IV × √(1/trading_days)
+        - Weekly move = Daily × √7""",
+        "Hurst Exponent (Market Regime)": """**Hurst Exponent** quantifies long‑term memory.
+        - H > 0.55 → trending.
+        - H < 0.45 → mean‑reverting.""",
+        "IV Rank & IV Percentile": """**IVR/IVP** indicate whether volatility is high or low.
+        - IVR > 65 → sell premium.
+        - IVR < 30 → buy premium.""",
+        "Liquidity Detector (Sweep)": """**Liquidity sweeps** detect institutional absorption.
+        - Supply sweep → bearish.
+        - Demand sweep → bullish.""",
+        "Open Interest Profile (Max Pain)": """**Open Interest & Max Pain** (simulated).
+        - Price often gravitates toward Max Pain.""",
+        "Parkinson Volatility Estimator": """**Parkinson volatility** uses high‑low range.
+        - High values → intraday turbulence.""",
+        "Volatility Cone": """**Volatility Cone** shows historical vol distribution.
+        - Yellow crosses = current vol.""",
+        "Volatility Risk Premium (VRP)": """**VRP** = implied vol – realised vol.
+        - Positive → sell premium.
+        - Negative → buy premium."""
+    }
+
+    # Mapping and execute
+    module_func_map = {
+        "Correlation Analysis": chart_correlation,
+        "Expected Daily & Weekly Move": chart_expected_move,
+        "Hurst Exponent (Market Regime)": chart_hurst,
+        "IV Rank & IV Percentile": chart_ivr,
+        "Liquidity Detector (Sweep)": chart_liquidity,
+        "Open Interest Profile (Max Pain)": chart_oi,
+        "Parkinson Volatility Estimator": chart_park,
+        "Volatility Cone": chart_cone,
+        "Volatility Risk Premium (VRP)": chart_vrp
+    }
+    func = module_func_map.get(selected_module)
+    expl = explanations.get(selected_module, "")
+    show_module(selected_module, expl, func() if func else None)
+
+elif st.session_state['active_tab'] == "📓 Habit Tracker":
+    st.title("📓 Options Seller Habit Tracker")
+    st.caption("Track your daily trading disciplines. Data auto‑saves to CSV.")
+
+    df = st.session_state['habit_data']
+    today = datetime.now().date()
+    current_year, current_month = today.year, today.month
+    month_str = f"{current_year}-{current_month:02d}"
+    st.subheader(f"Daily Checklist — {calendar.month_name[current_month]} {current_year}")
+
+    today_date = today
+    today_row = df[df['Date'] == today_date]
+    if today_row.empty:
+        st.warning("No entry for today. Refreshing...")
+        initialize_monthly_habit()
+        st.rerun()
     else:
-        df_chart = yf_download_retry(ticker, period="5d" if tf in ["5m","15m"] else "1mo", interval=tf)
-        if not df_chart.empty:
-            df_chart = flatten_df(df_chart).tail(100)
-            bb_upper, _, bb_lower = compute_bbands(df_chart['Close'])
-            fig_main = make_subplots(specs=[[{"secondary_y": False}]])
-            fig_main.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
-                                              low=df_chart['Low'], close=df_chart['Close'], name='Price'))
-            fig_main.add_trace(go.Scatter(x=df_chart.index, y=bb_upper, line=dict(color='gray',width=1,dash='dot'), name='BB Upper'))
-            fig_main.add_trace(go.Scatter(x=df_chart.index, y=bb_lower, line=dict(color='gray',width=1,dash='dot'), name='BB Lower'))
-            fig_main.add_hline(y=asset_spot + daily_move, line_dash="dash", line_color="cyan", annotation_text="Daily Upper")
-            fig_main.add_hline(y=asset_spot - daily_move, line_dash="dash", line_color="cyan", annotation_text="Daily Lower")
-            fig_main.update_layout(template='plotly_dark', height=500,
-                                   title=f"{asset_choice} — {tf} Chart",
-                                   xaxis_rangeslider_visible=False, hovermode='x unified')
-            st.plotly_chart(fig_main, width='stretch')
-        else: st.warning(f"Could not load {tf} data.")
-st.markdown('</div>', unsafe_allow_html=True)
+        today_idx = today_row.index[0]
 
-# ───── METRICS ROW ─────
-st.markdown('<div class="metric-row">', unsafe_allow_html=True)
-cols = st.columns(5)
-metrics = [
-    ("Spot", f"{currency}{asset_spot:,.2f}", f"{lp['change']:+.2f} ({lp['pct']:+.2f}%)"),
-    ("GARCH Vol", f"{garch_vol:.1f}%", "1-day forecast"),
-    ("Parkinson", f"{park_vol:.1f}%" if park_vol else "N/A", "High-Low"),
-    ("IV Rank", f"{ivr_val:.0f}%" if ivr_val else "N/A", "Sell >65, Buy <30"),
-    ("IV Percentile", f"{ivp_val:.0f}%" if ivp_val else "N/A", "vs 1yr")
-]
-for i, (label, value, sub) in enumerate(metrics):
-    with cols[i]:
-        st.markdown(f'''<div class="metric-card">
-            <div class="label">{label}</div>
-            <div class="value">{value}</div>
-            <div class="sub">{sub}</div>
-        </div>''', unsafe_allow_html=True)
-st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("### Today's Tasks")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        updated_tasks = {}
+        for i, task in enumerate(TASKS):
+            current_val = bool(df.loc[today_idx, task])
+            checked = st.checkbox(task, value=current_val, key=f"habit_{i}")
+            updated_tasks[task] = checked
+        changes_made = any(updated_tasks[task] != bool(df.loc[today_idx, task]) for task in TASKS)
+        if changes_made:
+            for task, val in updated_tasks.items():
+                df.at[today_idx, task] = val
+            df['Score'] = df[TASKS].sum(axis=1) / len(TASKS) * 100
+            st.session_state['habit_data'] = df
+            save_habit_data(df)
+            st.rerun()
 
-# ───── DETAILED ANALYTICS (nine modules) ─────
-analysis_modules = [
-    "Correlation Analysis", "Expected Daily & Weekly Move",
-    "Hurst Exponent (Market Regime)", "IV Rank & IV Percentile",
-    "Liquidity Detector (Sweep)", "Open Interest Profile (Max Pain)",
-    "Parkinson Volatility Estimator", "Volatility Cone",
-    "Volatility Risk Premium (VRP)"
-]
-selected_module = st.selectbox("📊 Detailed Analytics", analysis_modules)
+    today_score = df.loc[today_idx, 'Score']
+    st.metric("Today's Score", f"{today_score:.0f}%")
 
-def show_module(title, explanation, plot_func, *args, **kwargs):
-    st.markdown(f"## {title}")
-    st.markdown(explanation)
-    with st.spinner("Generating..."):
-        fig = plot_func(*args, **kwargs) if callable(plot_func) else None
-        if fig:
-            st.pyplot(fig)
-        else:
-            st.warning("Chart could not be generated.")
+    st.subheader("Weekly Performance")
+    df['Week'] = pd.to_datetime(df['Date']).dt.isocalendar().week
+    weekly_avg = df.groupby('Week')['Score'].mean().reset_index()
+    weekly_avg.columns = ['Week', 'Average Score']
+    def rating(score):
+        if score >= 80: return "EXCELLENT"
+        elif score >= 60: return "GOOD"
+        elif score >= 40: return "FAIR"
+        else: return "NEEDS WORK"
+    weekly_avg['Rating'] = weekly_avg['Average Score'].apply(rating)
+    st.dataframe(weekly_avg, use_container_width=True)
 
-# (Chart functions identical to previous, omitted for brevity but must be pasted)
-# ... (copy all chart_correlation, chart_expected_move, chart_hurst, etc. from previous full code)
+    st.subheader("Monthly Analytics")
+    monthly_avg = df['Score'].mean()
+    best_day_score = df['Score'].max()
+    consistency = (df['Score'] >= 80).mean() * 100
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric("Monthly Average", f"{monthly_avg:.1f}%")
+    col_m2.metric("Best Day", f"{best_day_score:.0f}%")
+    col_m3.metric("Consistency (≥80%)", f"{consistency:.1f}%")
 
-# ───── CROSS‑MARKET COMPARISON ─────
-with st.expander("🌐 Cross‑Market Comparison", expanded=True):
-    st.markdown(f"### {asset_choice} ({selected_market}) vs {other_name} ({other_market})")
-    col_c1, col_c2 = st.columns(2)
-    with col_c1: st.metric(f"{asset_choice} Spot", f"{currency}{asset_spot:,.2f}", f"{lp['change']:+.2f} ({lp['pct']:+.2f}%)")
-    with col_c2: st.metric(f"{other_name} Spot", f"{other_currency}{other_spot:,.2f}", f"{other_lp['change']:+.2f} ({other_lp['pct']:+.2f}%)")
-    col_c3, col_c4 = st.columns(2)
-    with col_c3: st.metric("GARCH Vol", f"{garch_vol:.1f}%")
-    with col_c4: st.metric("Other GARCH Vol", f"{other_garch:.1f}%")
-    corr_val = None
-    try:
-        df_cross = yf_download_retry([ticker, other_ticker], period="6mo")['Close']
-        if not df_cross.empty:
-            df_cross = flatten_df(df_cross)
-            rets = df_cross.pct_change().dropna()
-            if rets.shape[1] == 2: corr_val = rets.iloc[:,0].corr(rets.iloc[:,1])
-    except: pass
-    if corr_val is not None: st.metric("6‑Month Correlation", f"{corr_val:.2f}")
-    spot_diff_pct = ((asset_spot - other_spot) / other_spot) * 100 if other_spot else 0
-    st.markdown(f"**Relative Performance:** {asset_choice} is {'outperforming' if spot_diff_pct>0 else 'underperforming'} {other_name} by {abs(spot_diff_pct):.2f}%.")
-    vol_spread = garch_vol - other_garch
-    st.markdown(f"**Volatility Spread:** {abs(vol_spread):.1f}% {'higher' if vol_spread>0 else 'lower'} vs {other_name}.")
-    if corr_val is not None:
-        if corr_val > 0.7: st.info("High positive correlation – markets moving together.")
-        elif corr_val < -0.3: st.warning("Negative correlation – diversification opportunity.")
-        else: st.info("Low correlation – independent movements.")
+    st.subheader("Score Over Time")
+    fig, ax = plt.subplots(figsize=(10,4))
+    ax.plot(df['Date'], df['Score'], marker='o', linestyle='-', color='cyan')
+    ax.axhline(y=80, color='green', linestyle='--', alpha=0.5)
+    ax.axhline(y=50, color='orange', linestyle='--', alpha=0.5)
+    ax.set_ylim(0,105)
+    ax.set_ylabel("Score %")
+    ax.set_title("Daily Habit Score")
+    plt.xticks(rotation=45)
+    st.pyplot(fig)
 
-# ───── DAILY MARKET OVERVIEW ─────
-with st.expander("📅 Daily Market Overview (Snapshot Analysis)", expanded=True):
-    snaps = st.session_state['snapshots']
-    if not snaps:
-        st.info("No snapshots yet.")
-    else:
-        df_snaps = pd.DataFrame(snaps)
-        df_snaps['date'] = pd.to_datetime(df_snaps['date'])
-        df_snaps = df_snaps.sort_values('date')
-        st.subheader("Recent Snapshots")
-        st.dataframe(df_snaps.tail(5), use_container_width=True)
-
-        ta = tech_analysis
-        if ta:
-            st.subheader("📊 Comprehensive Market Analysis")
-            summary = [
-                f"**Market Regime:** {ta['regime']} (Hurst = {ta['hurst']:.3f})",
-                f"**Trend Bias:** {ta['bias']} (ADX={ta['adx']:.1f}, SMA20={ta['last_sma20']:,.2f}, SMA50={ta['last_sma50']:,.2f})",
-                f"**Volatility Regime:** {ta['vol_regime']} (GARCH={garch_vol:.1f}%, Parkinson={park_vol:.1f}%)",
-                f"**RSI(14):** {ta['last_rsi']:.1f} – {'Overbought' if ta['last_rsi']>70 else 'Oversold' if ta['last_rsi']<30 else 'Neutral'}",
-                f"**MACD:** {'Bullish cross' if ta['macd_bullish'] else 'Bearish cross'}",
-                f"**Volume:** {ta['vol_ratio']:.1f}x average",
-                f"**Expected Daily Move:** ±{currency}{daily_move:,.2f}",
-                f"**IV Rank:** {ivr_val:.0f}% – {'Sell premium' if ivr_val>65 else 'Buy premium' if ivr_val<30 else 'Neutral'}",
-            ]
-            for line in summary:
-                st.markdown(line)
-
-        if len(df_snaps) >= 2:
-            latest = df_snaps.iloc[-1]; prev = df_snaps.iloc[-2]
-            st.subheader("Day‑over‑Day Changes")
-            changes = {
-                'Spot': latest['spot'] - prev['spot'],
-                'Spot %': ((latest['spot'] - prev['spot']) / prev['spot']) * 100,
-                'GARCH Vol': latest['garch_vol'] - prev['garch_vol'],
-                'IV Rank': latest['ivr'] - prev['ivr'],
-                'Daily Move': latest['daily_move'] - prev['daily_move'],
-            }
-            st.dataframe(pd.DataFrame.from_dict(changes, orient='index', columns=['Change']).style.format("{:,.2f}"), use_container_width=True)
-
-        st.subheader("Snapshot History")
-        fig, ax1 = plt.subplots(figsize=(12,6))
-        ax1.plot(df_snaps['date'], df_snaps['spot'], marker='o', color='white', label='Spot')
-        ax2 = ax1.twinx()
-        ax2.plot(df_snaps['date'], df_snaps['garch_vol'], marker='s', color='cyan', label='GARCH Vol')
-        ax2.plot(df_snaps['date'], df_snaps['park_vol'], marker='^', color='orange', label='Parkinson Vol')
-        fig.legend(loc='upper left')
-        ax1.tick_params(axis='x', rotation=45)
-        st.pyplot(fig)
-
-# ───── MARKET PREDICTION & OUTLOOK (fixed – using global tech_analysis) ─────
-with st.expander("🔮 Market Prediction & Outlook", expanded=True):
-    snaps = st.session_state['snapshots']
-    today = datetime.now().strftime('%Y-%m-%d')
-    ta = tech_analysis
-
-    st.subheader("📅 Yesterday's Market Recap")
-    if len(snaps) >= 2:
-        snaps_sorted = sorted(snaps, key=lambda x: x.get('date',''))
-        yesterday_snap = None
-        for snap in reversed(snaps_sorted):
-            if snap.get('date','') != today:
-                yesterday_snap = snap
-                break
-        if yesterday_snap:
-            y_spot = yesterday_snap.get('spot','N/A')
-            y_garch = yesterday_snap.get('garch_vol','N/A')
-            y_ivr = yesterday_snap.get('ivr','N/A')
-            y_asset = yesterday_snap.get('asset','Unknown')
-            st.markdown(f"- **{y_asset}** closed at **{y_spot:.2f}** (GARCH {y_garch:.1f}%, IVR {y_ivr:.0f}%)")
-            day_before = None
-            for snap in snaps_sorted:
-                if snap.get('date','') < yesterday_snap.get('date',''):
-                    day_before = snap
-                    break
-            if day_before:
-                spot_change = yesterday_snap['spot'] - day_before['spot']
-                pct_change = (spot_change / day_before['spot'])*100 if day_before['spot'] else 0
-                direction = "↑" if spot_change > 0 else "↓"
-                st.markdown(f"- Change vs previous day: {direction} {abs(spot_change):.2f} ({abs(pct_change):.2f}%)")
-        else:
-            st.info("No snapshot for yesterday.")
-    else:
-        st.info("Need at least 2 snapshots for yesterday's recap.")
-
-    st.subheader("🌤️ Today's Outlook")
-    if ta:
-        st.markdown(f"**Market Regime:** {ta['regime']} (Hurst = {ta['hurst']:.3f})")
-        st.markdown(f"**Trend Bias:** {ta['bias']} (ADX = {ta['adx']:.1f})")
-        if ta['bias'] == "Bullish":
-            st.markdown(f"- Resistance near **{asset_spot + daily_move:,.2f}**, support at **{ta['last_sma20']:,.2f}**")
-        elif ta['bias'] == "Bearish":
-            st.markdown(f"- Support near **{asset_spot - daily_move:,.2f}**, resistance at **{ta['last_sma20']:,.2f}**")
-        else:
-            st.markdown(f"- Range: **{asset_spot - daily_move:,.2f} – {asset_spot + daily_move:,.2f}**")
-        st.markdown(f"- **Volatility:** {ta['vol_regime']} (GARCH {garch_vol:.1f}%), expected move ±{daily_move:.2f}")
-        if st.session_state.get('ml_model_trained', False) and ML_AVAILABLE:
-            try:
-                close_ml = hist_data['Close'].squeeze().tail(50)
-                df_ml = pd.DataFrame(close_ml, columns=['close'])
-                df_ml['ret'] = df_ml['close'].pct_change()
-                df_ml['vol'] = df_ml['ret'].rolling(10).std()
-                df_ml['rsi'] = 100 - 100/(1 + df_ml['ret'].rolling(14).mean()/df_ml['ret'].rolling(14).std())
-                ema12 = df_ml['close'].ewm(span=12,adjust=False).mean()
-                ema26 = df_ml['close'].ewm(span=26,adjust=False).mean()
-                df_ml['macd'] = ema12 - ema26
-                df_ml.dropna(inplace=True)
-                if not df_ml.empty:
-                    X = df_ml[['ret','vol','rsi','macd']].iloc[-1:].values
-                    pred = st.session_state['ml_model'].predict(X)[0]
-                    st.markdown(f"- **ML Signal:** {'🔼 Up' if pred==1 else '🔽 Down'}")
-            except: pass
-    else:
-        st.warning("Historical data missing.")
-
-    st.subheader("🗓️ Tomorrow's Forecast")
-    if ta:
-        if ta['regime'] == "Trending":
-            if ta['bias'] == "Bullish":
-                projected = asset_spot + daily_move
-                st.markdown(f"- **Trend continuation likely.** Projected price: **{projected:.2f}**")
-            elif ta['bias'] == "Bearish":
-                projected = asset_spot - daily_move
-                st.markdown(f"- **Trend continuation likely.** Projected price: **{projected:.2f}**")
-            else:
-                st.markdown("- Trend uncertain.")
-        elif ta['regime'] == "Mean‑Reverting":
-            projected = ta['last_sma20']
-            st.markdown(f"- **Mean reversion expected.** Price may revert towards SMA20 ({ta['last_sma20']:.2f}).")
-        else:
-            st.markdown("- **No clear bias.** Price likely within today's range.")
-        st.markdown(f"- **Tomorrow's 1σ range:** {asset_spot - daily_move:.2f} – {asset_spot + daily_move:.2f}")
-        st.caption("*Forecast based on Hurst regime & trend strength. Not financial advice.*")
-    else:
-        st.warning("Historical data missing.")
+    with st.expander("View Full Month Data"):
+        display_df = df[['Date'] + TASKS + ['Score']].copy()
+        display_df['Date'] = display_df['Date'].apply(lambda d: d.strftime('%d-%b'))
+        st.dataframe(display_df, use_container_width=True)
 
 # ───── AUTO REFRESH ─────
 if st.session_state['live_mode']:
