@@ -1,4 +1,4 @@
-# AlphaQuant Terminal — Complete Working Version with All Chart Functions
+# AlphaQuant Terminal — Final Complete Working Version
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -28,7 +28,6 @@ st.markdown("""
     .metric-card .value { font-size: 1.3rem; font-weight: 700; color: #FFFFFF; }
     .stButton>button { background: #2A3A5C; color: white; border: none; border-radius: 4px; }
     .explanation-box { background: #1A1D24; border: 1px solid #2A2E39; border-radius: 8px; padding: 15px; margin: 10px 0; }
-    .explanation-box h4 { color: #00C48C; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -108,6 +107,7 @@ if 'habit_data' not in st.session_state or st.session_state['habit_data'].empty:
     st.session_state['habit_data'] = load_habit_data()
 initialize_monthly_habit()
 
+# Technical Indicators
 def compute_rsi(series, period=14):
     delta = series.diff(); gain = delta.clip(lower=0); loss = -delta.clip(upper=0)
     avg_gain = gain.ewm(alpha=1/period, min_periods=period).mean()
@@ -178,9 +178,11 @@ def compute_full_analysis(hist_data, spot, gv, td, pv, ivr_val):
     ts = (2 if align else 0) + (1 if mb else 0) + (1 if adx > 25 else 0)
     bias = "Bullish" if ts >= 3 else ("Bearish" if ts == 0 else "Neutral")
     vr2 = "High" if gv > 70 else ("Low" if gv < 30 else "Moderate")
-    return {'adx':adx,'rsi':rsi,'macd':macd,'signal':sig,'sma20':sma20,'sma50':sma50,
-            'vr':vr,'regime':regime,'bias':bias,'vol_regime':vr2,'hurst':hurst,
-            'macd_bullish':mb,'daily_move':spot*(gv/100)*np.sqrt(1/td)}
+    return {
+        'adx':adx,'rsi':rsi,'macd':macd,'signal':sig,'sma20':sma20,'sma50':sma50,
+        'vr':vr,'regime':regime,'bias':bias,'vol_regime':vr2,'hurst':hurst,
+        'macd_bullish':mb,'daily_move':spot*(gv/100)*np.sqrt(1/td)
+    }
 
 def train_ml_model(close_px):
     if not ML_AVAILABLE or len(close_px) < 150: return False
@@ -224,8 +226,11 @@ def live_price(ticker):
     df = flatten_df(raw)
     if len(df) < 2: return None
     last = float(df['Close'].iloc[-1]); prev = float(df['Close'].iloc[-2])
-    return {'spot': last, 'prev_close': prev, 'change': last - prev,
-            'pct': ((last - prev) / prev) * 100 if prev else 0, 'ts': datetime.now().strftime('%H:%M:%S')}
+    return {
+        'spot': last, 'prev_close': prev, 'change': last - prev,
+        'pct': ((last - prev) / prev) * 100 if prev else 0,
+        'ts': datetime.now().strftime('%H:%M:%S')
+    }
 
 @st.cache_data(ttl=CACHE_TTL['garch'])
 def garch_both(ticker):
@@ -244,7 +249,7 @@ def get_india_vix(period="5d"):
     v = yf_download_retry("^INDIAVIX", period=period)['Close'].squeeze()
     return v if not v.empty else None
 
-# ───── ALL 9 CHART FUNCTIONS ─────
+# Chart functions
 def chart_correlation():
     corr_tickers = ['BTC-USD','ETH-USD'] if selected_market == "Crypto" else ['^NSEI','^NSEBANK']
     corr_data = yf_download_retry(corr_tickers, period="1y")['Close']
@@ -363,7 +368,6 @@ def chart_vrp():
     ax2.bar(common, vrp, color=colors); ax2.axhline(0, color='white')
     return fig
 
-# ───── EXPLANATIONS ─────
 EXPLANATIONS = {
     "Correlation": "**Correlation Analysis** measures how closely two assets move together. Above 0.8 = high correlation (assets move together). Below 0.5 = low correlation (independent movement). Use for diversification and pair trading.",
     "Expected Move": "**Expected Move** projects tomorrow's and next week's likely price range. Cyan lines = daily range, Orange lines = weekly range. 68% probability price stays within these lines. Use for stop-loss placement and option strike selection.",
@@ -443,7 +447,91 @@ if st.session_state['active_tab'] == "Dashboard":
         fig.add_trace(go.Scatter(x=df_chart.index, y=bb_l, line=dict(color='gray', width=1, dash='dot'), name='BB Lower'))
         fig.update_layout(template='plotly_dark', height=500, xaxis_rangeslider_visible=False, hovermode='x unified')
         st.plotly_chart(fig, width='stretch')
+    metrics = [("Spot", f"{currency}{asset_spot:,.2f}"), ("GARCH", f"{garch_vol:.1f}%"),
+               ("Parkinson", f"{park_vol:.1f}%" if park_vol else "N/A"),
+               ("IV Rank", f"{ivr_val:.0f}%" if ivr_val else "N/A"),
+               ("IV %ile", f"{ivp_val:.0f}%" if ivp_val else "N/A")]
     cols = st.columns(5)
-    for i, (l, v) in enumerate([("Spot", f"{currency}{asset_spot:,.2f}"), ("GARCH", f"{garch_vol:.1f}%"),
-                                 ("Parkinson", f"{park_vol:.1f}%" if park_vol else "N/A"),
-                                 ("IV Rank", f"{ivr_val
+    for i, (l, v) in enumerate(metrics):
+        with cols[i]:
+            st.markdown(f'<div class="metric-card"><div class="label">{l}</div><div class="value">{v}</div></div>', unsafe_allow_html=True)
+
+elif st.session_state['active_tab'] == "Technical":
+    st.title("Full Technical Analysis")
+    if selected_analysis:
+        st.markdown(f"### Summary: {selected_analysis['regime']} | Bias: {selected_analysis['bias']} | RSI: {selected_analysis['rsi']:.1f} | Daily Move: +/-{currency}{selected_analysis['daily_move']:,.2f}")
+        st.markdown("---")
+        modules = [
+            ("Correlation", chart_correlation, "Correlation"),
+            ("Expected Move", chart_expected_move, "Expected Move"),
+            ("Hurst Exponent", chart_hurst, "Hurst Exponent"),
+            ("IV Rank & IV Percentile", chart_ivr, "IV Rank & IV Percentile"),
+            ("Liquidity Detector", chart_liquidity, "Liquidity Detector"),
+            ("Open Interest Profile", chart_oi, "Open Interest Profile"),
+            ("Parkinson Volatility", chart_park, "Parkinson Volatility"),
+            ("Volatility Cone", chart_cone, "Volatility Cone"),
+            ("VRP", chart_vrp, "VRP")
+        ]
+        for i in range(0, len(modules), 2):
+            cols = st.columns(2)
+            for j in range(2):
+                idx = i + j
+                if idx < len(modules):
+                    name, func, key = modules[idx]
+                    with cols[j]:
+                        with st.expander(f"{name}", expanded=False):
+                            try:
+                                fig = func()
+                                if fig:
+                                    st.pyplot(fig)
+                                    st.markdown('<div class="explanation-box">', unsafe_allow_html=True)
+                                    st.markdown(EXPLANATIONS.get(key, ""))
+                                    st.markdown('</div>', unsafe_allow_html=True)
+                                else:
+                                    st.warning("Data unavailable")
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+    else:
+        st.warning("No analysis data available. Please refresh.")
+
+elif st.session_state['active_tab'] == "AI Agent":
+    st.title("AI Market Analyst")
+    for msg in st.session_state.ai_messages:
+        with st.chat_message(msg["role"]): st.write(msg["content"])
+    if prompt := st.chat_input("Ask about the market..."):
+        st.session_state.ai_messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"): st.write(prompt)
+        q = prompt.lower()
+        if any(w in q for w in ['buy', 'long']):
+            ans = f"Analyzing {asset_choice} at {currency}{asset_spot:,.2f}. Check Technical tab for details. Not financial advice."
+        elif any(w in q for w in ['sell', 'short']):
+            ans = f"Analyzing {asset_choice} at {currency}{asset_spot:,.2f}. Check Technical tab for details. Not financial advice."
+        elif any(w in q for w in ['summary']):
+            ans = f"{asset_choice}: {currency}{asset_spot:,.2f} | GARCH: {garch_vol:.1f}%"
+        else:
+            ans = "I can help with buy/sell signals, risk assessment, or market summary. Ask away!"
+        with st.chat_message("assistant"): st.write(ans)
+        st.session_state.ai_messages.append({"role": "assistant", "content": ans})
+
+elif st.session_state['active_tab'] == "Habit Tracker":
+    st.title("Habit Tracker")
+    df = st.session_state['habit_data']
+    today = datetime.now().date()
+    tr = df[df['Date'] == today]
+    if not tr.empty:
+        idx = tr.index[0]
+        for i, task in enumerate(TASKS):
+            val = st.checkbox(task, value=bool(df.loc[idx, task]), key=f"h_{i}")
+            if val != bool(df.loc[idx, task]):
+                df.at[idx, task] = val
+                df['Score'] = df[TASKS].sum(axis=1) / len(TASKS) * 100
+                st.session_state['habit_data'] = df; save_habit_data(df); st.rerun()
+        st.metric("Today's Score", f"{df.loc[idx, 'Score']:.0f}%")
+    st.subheader("Monthly")
+    st.metric("Average", f"{df['Score'].mean():.1f}%")
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(df['Date'], df['Score'], marker='o', color='cyan')
+    ax.set_ylim(0, 105); st.pyplot(fig)
+
+if st.session_state['live_mode']:
+    time.sleep(st.session_state['refresh_interval']); st.rerun()
