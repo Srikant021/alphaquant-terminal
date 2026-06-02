@@ -69,7 +69,8 @@ CONFIG = load_config()
 CACHE_TTL = CONFIG['cache_ttl']
 
 plt.style.use('dark_background')
-logging.basicConfig(level=logging.INFO); logger=logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ───── SNAPSHOT FILE ─────
 SNAPSHOT_FILE = "daily_snapshots.csv"
@@ -78,14 +79,18 @@ def load_snapshots():
         try:
             df = pd.read_csv(SNAPSHOT_FILE)
             st.session_state['snapshots'] = df.to_dict('records')
-        except: st.session_state['snapshots'] = []
-    else: st.session_state['snapshots'] = []
+        except: 
+            st.session_state['snapshots'] = []
+    else: 
+        st.session_state['snapshots'] = []
+        
 def save_snapshot(snap_dict):
     df_new = pd.DataFrame([snap_dict])
     if os.path.exists(SNAPSHOT_FILE):
         df_new.to_csv(SNAPSHOT_FILE, mode='a', header=False, index=False)
     else:
         df_new.to_csv(SNAPSHOT_FILE, index=False)
+        
 if 'snapshots_loaded' not in st.session_state:
     load_snapshots()
     st.session_state['snapshots_loaded'] = True
@@ -101,6 +106,7 @@ TASKS = [
     "Trading Journal Maintained",
     "Goal Journaling"
 ]
+
 def load_habit_data():
     if os.path.exists(HABIT_FILE):
         try:
@@ -111,8 +117,10 @@ def load_habit_data():
             if 'Score' not in df.columns:
                 df['Score'] = df[TASKS].sum(axis=1) / len(TASKS) * 100
             return df
-        except: return pd.DataFrame(columns=['Date'] + TASKS + ['Score'])
-    else: return pd.DataFrame(columns=['Date'] + TASKS + ['Score'])
+        except: 
+            return pd.DataFrame(columns=['Date'] + TASKS + ['Score'])
+    else: 
+        return pd.DataFrame(columns=['Date'] + TASKS + ['Score'])
 
 def save_habit_data(df):
     df.to_csv(HABIT_FILE, index=False)
@@ -175,23 +183,25 @@ def calculate_hurst_exponent(ts):
     try:
         tau = [np.sqrt(np.std(np.subtract(ts[lag:], ts[:-lag]))) for lag in lags]
         return np.polyfit(np.log(lags), np.log(tau), 1)[0]*2.0
-    except: return np.nan
+    except: 
+        return np.nan
 
-def calculate_parkinson_volatility(high_px,low_px,periods_per_year=252):
+def calculate_parkinson_volatility(high_px, low_px, periods_per_year=252):
     if len(high_px)!=len(low_px) or len(high_px)<2: return 0.0
-    log_hl=np.log(high_px/low_px)**2; N=len(log_hl)
+    log_hl = np.log(high_px/low_px)**2
+    N = len(log_hl)
     return np.sqrt((log_hl.sum()/(4*N*np.log(2)))*periods_per_year)*100
 
-def calculate_iv_rank_percentile(close_px,window=20):
-    if len(close_px)<window: return 50.0,50.0
-    log_ret=np.log(close_px/close_px.shift(1)).dropna()
-    rolling_vol=log_ret.rolling(window).std()*np.sqrt(252)*100
-    cur_vol=rolling_vol.iloc[-1]
-    if rolling_vol.empty or np.isnan(cur_vol): return 50.0,50.0
-    vol_min,vol_max=rolling_vol.min(),rolling_vol.max()
-    ivr=((cur_vol-vol_min)/(vol_max-vol_min))*100 if vol_max!=vol_min else 50.0
-    ivp=(rolling_vol<cur_vol).sum()/len(rolling_vol)*100
-    return ivr,ivp
+def calculate_iv_rank_percentile(close_px, window=20):
+    if len(close_px)<window: return 50.0, 50.0
+    log_ret = np.log(close_px/close_px.shift(1)).dropna()
+    rolling_vol = log_ret.rolling(window).std()*np.sqrt(252)*100
+    cur_vol = rolling_vol.iloc[-1] if not rolling_vol.empty else 50
+    if rolling_vol.empty or np.isnan(cur_vol): return 50.0, 50.0
+    vol_min, vol_max = rolling_vol.min(), rolling_vol.max()
+    ivr = ((cur_vol-vol_min)/(vol_max-vol_min))*100 if vol_max!=vol_min else 50.0
+    ivp = (rolling_vol<cur_vol).sum()/len(rolling_vol)*100
+    return ivr, ivp
 
 def compute_trend_strength(high, low, close, period=14):
     tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
@@ -231,10 +241,14 @@ def compute_full_analysis(hist_data, asset_spot, garch_vol, trading_days, park_v
 
     log_p = np.log(tech_df['Close'])
     hurst = calculate_hurst_exponent(log_p.values[-200:])
-    if np.isnan(hurst): regime = "Unknown"
-    elif hurst > 0.55: regime = "Trending"
-    elif hurst < 0.45: regime = "Mean‑Reverting"
-    else: regime = "Random Walk"
+    if np.isnan(hurst): 
+        regime = "Unknown"
+    elif hurst > 0.55: 
+        regime = "Trending"
+    elif hurst < 0.45: 
+        regime = "Mean‑Reverting"
+    else: 
+        regime = "Random Walk"
 
     sma_alignment = (asset_spot > last_sma20) and (last_sma20 > last_sma50)
     macd_bullish = last_macd > last_signal
@@ -242,13 +256,19 @@ def compute_full_analysis(hist_data, asset_spot, garch_vol, trading_days, park_v
     if sma_alignment: trend_score += 2
     if macd_bullish: trend_score += 1
     if adx > 25: trend_score += 1
-    if trend_score >= 3: bias = "Bullish"
-    elif trend_score == 0: bias = "Bearish"
-    else: bias = "Neutral"
+    if trend_score >= 3: 
+        bias = "Bullish"
+    elif trend_score == 0: 
+        bias = "Bearish"
+    else: 
+        bias = "Neutral"
 
-    if garch_vol > 70: vol_regime = "High Volatility"
-    elif garch_vol < 30: vol_regime = "Low Volatility"
-    else: vol_regime = "Moderate"
+    if garch_vol > 70: 
+        vol_regime = "High Volatility"
+    elif garch_vol < 30: 
+        vol_regime = "Low Volatility"
+    else: 
+        vol_regime = "Moderate"
 
     daily_move = asset_spot * (garch_vol/100) * np.sqrt(1/trading_days)
 
@@ -292,45 +312,52 @@ def yf_download_retry(*args, max_retries=2, **kwargs):
             data = yf.download(*args, progress=False, **kwargs)
             if data is not None and not data.empty:
                 return data
-        except: pass
+        except: 
+            pass
         time.sleep(2**attempt)
     return pd.DataFrame()
 
 def flatten_df(df_raw):
     if isinstance(df_raw.columns, pd.MultiIndex):
-        df=df_raw.copy(); df.columns=df_raw.columns.get_level_values(0); return df
+        df = df_raw.copy()
+        df.columns = df_raw.columns.get_level_values(0)
+        return df
     return df_raw
 
 @st.cache_data(ttl=CACHE_TTL['long_hist'], show_spinner=False)
 def fetch_long_hist(ticker):
-    raw=yf_download_retry(ticker, period="2y")
+    raw = yf_download_retry(ticker, period="2y")
     return flatten_df(raw) if not raw.empty else pd.DataFrame()
 
 @st.cache_data(ttl=CACHE_TTL['live_price'], show_spinner=False)
 def live_price(ticker):
-    raw=yf_download_retry(ticker, period="2d")
+    raw = yf_download_retry(ticker, period="2d")
     if raw.empty: return None
-    df=flatten_df(raw)
+    df = flatten_df(raw)
     if len(df)<2: return None
-    last=float(df['Close'].iloc[-1]); prev=float(df['Close'].iloc[-2])
-    chg=last-prev; pct=((last-prev)/prev)*100 if prev else 0
+    last = float(df['Close'].iloc[-1])
+    prev = float(df['Close'].iloc[-2])
+    chg = last-prev
+    pct = ((last-prev)/prev)*100 if prev else 0
     return {'spot':last,'prev_close':prev,'change':chg,'pct':pct,'ts':datetime.now().strftime('%H:%M:%S')}
 
 @st.cache_data(ttl=CACHE_TTL['garch'])
 def garch_both(ticker):
-    df=yf_download_retry(ticker, period="1y", interval="1d")
+    df = yf_download_retry(ticker, period="1y", interval="1d")
     if df.empty: return 80, 80
-    close=df['Close'].squeeze()
-    ret=100*close.pct_change().dropna()
+    close = df['Close'].squeeze()
+    ret = 100*close.pct_change().dropna()
     if len(ret)<100: return 80, 80
     try:
         m1 = arch_model(ret, vol='GARCH', p=1, q=1, rescale=True).fit(disp='off')
         vol1 = np.sqrt(m1.forecast(horizon=1).variance.iloc[-1].values[0])*np.sqrt(252)
-    except: vol1 = 80
+    except: 
+        vol1 = 80
     try:
         m2 = arch_model(ret, vol='GARCH', p=1, o=1, q=1, rescale=True).fit(disp='off')
         vol2 = np.sqrt(m2.forecast(horizon=1).variance.iloc[-1].values[0])*np.sqrt(252)
-    except: vol2 = 80
+    except: 
+        vol2 = 80
     return vol1, vol2
 
 @st.cache_data(ttl=300)
@@ -338,29 +365,35 @@ def get_india_vix(period="5d"):
     v = yf_download_retry("^INDIAVIX", period=period)['Close'].squeeze()
     return v if not v.empty else None
 
-# ───── CHART FUNCTIONS (defined globally) ─────
+# ───── CHART FUNCTIONS ─────
 def chart_correlation():
     corr_tickers = ['BTC-USD','ETH-USD'] if selected_market=="Crypto" else ['^NSEI','^NSEBANK']
     corr_data = yf_download_retry(corr_tickers, period="1y")['Close']
     if corr_data.empty: return None
     names = ("Bitcoin","Ethereum") if selected_market=="Crypto" else ("Nifty","Bank Nifty")
-    df = corr_data.dropna(); df.columns = names
+    df = corr_data.dropna()
+    df.columns = names
     norm = df / df.iloc[0] * 100
     log_ret = np.log(df / df.shift(1)).dropna()
     roll_corr = log_ret[names[0]].rolling(20).corr(log_ret[names[1]])
-    fig, (ax1,ax2) = plt.subplots(2,1,figsize=(10,6), gridspec_kw={'height_ratios':[2,1]})
+    fig, (ax1, ax2) = plt.subplots(2,1,figsize=(10,6), gridspec_kw={'height_ratios':[2,1]})
     ax1.plot(norm.index, norm[names[0]], label=names[0])
     ax1.plot(norm.index, norm[names[1]], label=names[1])
-    ax1.legend(); ax1.set_title("Correlation")
+    ax1.legend()
+    ax1.set_title("Correlation")
     ax2.plot(roll_corr.index, roll_corr, color='white')
-    ax2.axhline(0.8,color='green',ls='--'); ax2.axhline(0.5,color='red',ls='--'); ax2.set_ylim(-0.2,1.1)
-    plt.tight_layout(); return fig
+    ax2.axhline(0.8, color='green', ls='--')
+    ax2.axhline(0.5, color='red', ls='--')
+    ax2.set_ylim(-0.2, 1.1)
+    plt.tight_layout()
+    return fig
 
 def chart_expected_move():
     iv_use = garch_vol
     if selected_market == "Indian Market":
         vix = get_india_vix("5d")
-        if vix is not None: iv_use = float(vix.iloc[-1])
+        if vix is not None: 
+            iv_use = float(vix.iloc[-1])
     recent_close = hist_data['Close'].squeeze().tail(20)
     daily_vol = iv_use/100/np.sqrt(trading_days)
     dm = asset_spot * daily_vol
@@ -374,113 +407,18 @@ def chart_expected_move():
     ax.hlines(asset_spot-dm, last_idx, next_d, colors='cyan', linestyles='--')
     ax.hlines(asset_spot+wm, last_idx, next_w, colors='orange', linestyles='--')
     ax.hlines(asset_spot-wm, last_idx, next_w, colors='orange', linestyles='--')
-    ax.set_title("Expected Moves"); plt.tight_layout(); return fig
-
-def chart_hurst():
-    close = hist_data['Close'].squeeze()
-    log_p = np.log(close)
-    hurst_series = log_p.rolling(60).apply(lambda x: calculate_hurst_exponent(x) if len(x)>=20 else np.nan, raw=False)
-    df = pd.DataFrame({'Close':close,'Hurst':hurst_series}).dropna()
-    if df.empty: return None
-    fig, (ax1,ax2) = plt.subplots(2,1,figsize=(10,7), gridspec_kw={'height_ratios':[2,1]})
-    ax1.plot(df.index, df['Close'], color='white')
-    ax2.plot(df.index, df['Hurst'], color='cyan')
-    ax2.axhline(0.55,color='green',ls='--'); ax2.axhline(0.45,color='red',ls='--'); ax2.set_ylim(0.3,0.7)
+    ax.set_title("Expected Moves")
+    plt.tight_layout()
     return fig
 
-def chart_ivr():
-    close = hist_data['Close'].squeeze()
-    rolling_vol = np.log(close/close.shift(1)).dropna().rolling(20).std()*np.sqrt(252)*100
-    vol_series = rolling_vol.dropna()
-    cur = vol_series.iloc[-1]; vmin, vmax = vol_series.min(), vol_series.max()
-    ivr = ((cur-vmin)/(vmax-vmin))*100 if vmax!=vmin else 50
-    fig, ax = plt.subplots(figsize=(10,5))
-    ax.plot(vol_series.index, vol_series, color='cyan')
-    ax.axhline(vmax, color='red', ls='--'); ax.axhline(vmin, color='green', ls='--')
-    ax.set_title(f"IV Rank: {ivr:.0f}% | IV Percentile: {ivp_val:.0f}%")
-    return fig
-
-def chart_liquidity():
-    intra = yf_download_retry(ticker, period="5d", interval="30m")
-    if intra is None or intra.empty: return None
-    intra = flatten_df(intra).tail(60)
-    df = intra.copy()
-    df['Prev_High'] = df['High'].rolling(20).max().shift(1)
-    df['Prev_Low'] = df['Low'].rolling(20).min().shift(1)
-    df['Supply'] = (df['High']>df['Prev_High']) & (df['Close']<df['Prev_High'])
-    df['Demand'] = (df['Low']<df['Prev_Low']) & (df['Close']>df['Prev_Low'])
-    fig, ax = plt.subplots(figsize=(10,5))
-    ax.plot(df.index, df['Close'], color='white')
-    ax.scatter(df.index[df['Supply']], df['High'][df['Supply']]+10, color='red', marker='v')
-    ax.scatter(df.index[df['Demand']], df['Low'][df['Demand']]-10, color='green', marker='^')
-    return fig
-
-def chart_oi():
-    step = 500 if asset_spot>10000 else 50
-    base = round(asset_spot/step)*step
-    strikes = np.arange(base-8*step, base+9*step, step)
-    np.random.seed(int(asset_spot)%1234)
-    calls = np.random.randint(10,80,len(strikes))*50000
-    puts = np.random.randint(10,80,len(strikes))*50000
-    pain = {k: np.sum(np.maximum(0,k-strikes)*calls + np.maximum(0,strikes-k)*puts) for k in strikes}
-    max_pain = min(pain, key=pain.get)
-    fig, ax = plt.subplots(figsize=(12,7))
-    ax.barh(strikes, calls/1e5, color='red', alpha=0.8, label='Call OI')
-    ax.barh(strikes, -puts/1e5, color='green', alpha=0.8, label='Put OI')
-    ax.axhline(asset_spot, color='cyan', linewidth=2, label=f'Spot {asset_spot:,.0f}')
-    ax.axhline(max_pain, color='white', linestyle='--', label=f'Max Pain {max_pain}')
-    ax.legend(); ax.invert_yaxis(); return fig
-
-def chart_park():
-    high = hist_data['High'].squeeze().tail(60); low = hist_data['Low'].squeeze().tail(60)
-    park_val = calculate_parkinson_volatility(high,low,trading_days)
-    fig, ax = plt.subplots()
-    ax.bar(['Parkinson Vol'], [park_val], color='orange')
-    ax.set_ylabel('%'); ax.set_title(f"Parkinson Vol = {park_val:.1f}%")
-    return fig
-
-def chart_cone():
-    close = hist_data['Close'].squeeze()
-    log_ret = np.log(close/close.shift(1)).dropna()
-    windows = [10,20,30,60,90,120,180,252]
-    max_v,min_v,med_v,cur_v = [],[],[],[]
-    for w in windows:
-        rv = log_ret.rolling(w).std()*np.sqrt(trading_days)*100
-        if not rv.dropna().empty:
-            max_v.append(rv.max()); min_v.append(rv.min()); med_v.append(rv.median()); cur_v.append(rv.iloc[-1])
-    fig, ax = plt.subplots(figsize=(10,6))
-    ax.plot(windows, max_v, 'o-', color='red', label='Max'); ax.plot(windows, min_v, 'o-', color='green', label='Min')
-    ax.plot(windows, med_v, 's--', color='white', label='Median'); ax.plot(windows, cur_v, 'X-', color='yellow', markersize=10, label='Current')
-    ax.fill_between(windows, min_v, max_v, alpha=0.2)
-    ax.legend(); ax.set_xlabel("Window (days)"); ax.set_ylabel("Vol (%)")
-    return fig
-
-def chart_vrp():
-    close = hist_data['Close'].squeeze()
-    log_ret = np.log(close/close.shift(1)).dropna()
-    hv = log_ret.rolling(20).std()*np.sqrt(trading_days)*100
-    iv = garch_vol
-    if selected_market=="Indian Market":
-        v = get_india_vix("6mo")
-        if v is not None: iv_series = v; iv = v.iloc[-1]
-    else: iv_series = pd.Series([iv]*len(hv), index=hv.index)
-    common = hv.index.intersection(iv_series.index)
-    hv_c = hv[common]; iv_c = iv_series[common]
-    vrp = iv_c - hv_c
-    fig, (ax1,ax2) = plt.subplots(2,1,figsize=(10,6), gridspec_kw={'height_ratios':[2,1]})
-    ax1.plot(common, iv_c, color='cyan', label='Implied'); ax1.plot(common, hv_c, color='orange', label='Realised')
-    ax1.fill_between(common, hv_c, iv_c, where=(iv_c>hv_c), color='green', alpha=0.3)
-    ax1.fill_between(common, hv_c, iv_c, where=(iv_c<=hv_c), color='red', alpha=0.3)
-    ax1.legend(); ax1.set_title("VRP")
-    colors = ['green' if v>0 else 'red' for v in vrp]
-    ax2.bar(common, vrp, color=colors); ax2.axhline(0, color='white')
-    return fig
-
-# ───── SIDEBAR & NAVIGATION ─────
+# ============================================================================
+# SIDEBAR & NAVIGATION
+# ============================================================================
 with st.sidebar:
     st.markdown("## ⚡ AlphaQuant Terminal")
     market_type = st.radio("Market", ["Crypto", "Indian Market"], horizontal=True,
-                           index=0 if st.session_state['selected_market'] == 'Crypto' else 1, key="market_radio")
+                           index=0 if st.session_state['selected_market'] == 'Crypto' else 1, 
+                           key="market_radio")
     if market_type != st.session_state['selected_market']:
         st.session_state['selected_market'] = market_type
         st.cache_data.clear()
@@ -488,9 +426,13 @@ with st.sidebar:
     selected_market = st.session_state['selected_market']
 
     if selected_market == "Crypto":
-        ticker_dict = CONFIG['cryptos']; trading_days = 365; currency = "$"
+        ticker_dict = CONFIG['cryptos']
+        trading_days = 365
+        currency = "$"
     else:
-        ticker_dict = CONFIG['indian_market']; trading_days = 252; currency = "₹"
+        ticker_dict = CONFIG['indian_market']
+        trading_days = 252
+        currency = "₹"
 
     asset_choice = st.selectbox("Asset", list(ticker_dict.keys()), key="asset_select")
     ticker = ticker_dict[asset_choice]
@@ -521,33 +463,164 @@ with st.sidebar:
     if st.button("🔄 Refresh All Data"):
         st.cache_data.clear()
         st.rerun()
-    st.caption("AlphaQuant Terminal Pro")
+    st.caption("AlphaQuant Terminal Pro · AI-Powered Trading Assistant")
 
-# ───── DATA LOADING ─────
+# ============================================================================
+# DATA LOADING
+# ============================================================================
 hist_data = fetch_long_hist(ticker)
 lp = live_price(ticker)
 if lp is None and not hist_data.empty:
     close = hist_data['Close'].squeeze()
     if len(close) >= 2:
-        spot = float(close.iloc[-1]); prev = float(close.iloc[-2])
-        lp = {'spot':spot,'prev_close':prev,'change':spot-prev,'pct':((spot-prev)/prev)*100,'ts':'hist'}
+        spot = float(close.iloc[-1])
+        prev = float(close.iloc[-2])
+        lp = {'spot':spot, 'prev_close':prev, 'change':spot-prev, 'pct':((spot-prev)/prev)*100, 'ts':'hist'}
     else:
-        lp = {'spot':0,'prev_close':0,'change':0,'pct':0,'ts':'unavailable'}
+        lp = {'spot':0, 'prev_close':0, 'change':0, 'pct':0, 'ts':'unavailable'}
 asset_spot = lp['spot']
 garch_vol, gjrgarch_vol = garch_both(ticker)
 
 park_vol = ivr_val = ivp_val = None
 if not hist_data.empty and all(c in hist_data.columns for c in ['High','Low','Close']):
-    high = hist_data['High'].squeeze().tail(60); low = hist_data['Low'].squeeze().tail(60); close_px = hist_data['Close'].squeeze().tail(60)
-    park_vol = calculate_parkinson_volatility(high,low,periods_per_year=trading_days)
+    high = hist_data['High'].squeeze().tail(60)
+    low = hist_data['Low'].squeeze().tail(60)
+    close_px = hist_data['Close'].squeeze().tail(60)
+    park_vol = calculate_parkinson_volatility(high, low, periods_per_year=trading_days)
     ivr_val, ivp_val = calculate_iv_rank_percentile(close_px)
 
 selected_analysis = compute_full_analysis(hist_data, asset_spot, garch_vol, trading_days, park_vol, ivr_val)
 
-# ───── BTC & NIFTY DATA ─────
-btc_ticker = 'BTC-USD'
-btc_hist = fetch_long_hist(btc_ticker)
-btc_lp = live_price(btc_ticker)
-if btc_lp is None and not btc_hist.empty:
-    close_btc = btc_hist['Close'].squeeze()
-    if len(close_btc) >= 
+# ============================================================================
+# AUTO-SAVE SNAPSHOTS
+# ============================================================================
+today_str = datetime.now().strftime('%Y-%m-%d')
+snaps = st.session_state['snapshots']
+if not any(s.get('date')==today_str and s.get('market')==selected_market and s.get('asset')==asset_choice for s in snaps):
+    save_snapshot({'date':today_str, 'asset':asset_choice, 'market':selected_market,
+                   'spot':asset_spot, 'garch_vol':garch_vol, 'park_vol':park_vol if park_vol else 0.0,
+                   'ivr':ivr_val if ivr_val else 0.0, 'ivp':ivp_val if ivp_val else 0.0,
+                   'daily_move': selected_analysis['daily_move'] if selected_analysis else 0})
+    st.session_state['snapshots'] = load_snapshots()
+
+# ============================================================================
+# AI AGENT FUNCTION
+# ============================================================================
+def ai_agent_response(query, market_data, analysis):
+    """Simple rule-based AI agent for trading assistance"""
+    query_lower = query.lower()
+    
+    # Market condition responses
+    if any(word in query_lower for word in ['trend', 'direction', 'bias']):
+        if analysis:
+            return f"""📈 **Market Trend Analysis**
+- Current Bias: **{analysis['bias']}**
+- ADX (Trend Strength): {analysis['adx']:.1f} {'(Strong Trend)' if analysis['adx'] > 25 else '(Weak Trend)'}
+- Market Regime: {analysis['regime']}
+- SMA Alignment: {'Bullish' if asset_spot > analysis['last_sma20'] > analysis['last_sma50'] else 'Bearish'}
+- MACD: {'Bullish Cross' if analysis['macd_bullish'] else 'Bearish Cross'}
+
+**Suggested Action:** {'Consider bullish strategies' if analysis['bias'] == 'Bullish' else 'Consider bearish/hedging strategies' if analysis['bias'] == 'Bearish' else 'Range-bound - consider neutral strategies'}"""
+    
+    elif any(word in query_lower for word in ['volatility', 'vol', 'risk']):
+        return f"""⚡ **Volatility Analysis**
+- GARCH Forecast: {garch_vol:.1f}% 
+- Parkinson Vol: {park_vol:.1f}% (if available)
+- IV Rank: {ivr_val:.0f}% {'(High - Favor Selling Premium)' if ivr_val and ivr_val > 65 else '(Low - Favor Buying Premium)' if ivr_val and ivr_val < 30 else '(Moderate)'}
+- IV Percentile: {ivp_val:.0f}%
+- Volatility Regime: {analysis['vol_regime'] if analysis else 'Moderate'}
+
+**Option Strategy Suggestion:** 
+{'🔥 **SELL** options (credit spreads, Iron Condors) - Premiums are rich!' if ivr_val and ivr_val > 65 else '📊 **BUY** options or use debit spreads - Volatility is cheap!' if ivr_val and ivr_val < 30 else '⚖️ Neutral strategies like Iron Condors or Strangles'}"""
+    
+    elif any(word in query_lower for word in ['rsi', 'overbought', 'oversold']):
+        if analysis:
+            rsi = analysis['last_rsi']
+            if rsi > 70:
+                return f"""🟡 **RSI Alert: OVERBOUGHT** (RSI = {rsi:.1f})
+- Market may be due for a pullback
+- Consider: Bearish spreads, put options, or profit booking
+- Wait for RSI to cool below 70 before re-entry"""
+            elif rsi < 30:
+                return f"""🟢 **RSI Alert: OVERSOLD** (RSI = {rsi:.1f})
+- Market may be due for a bounce
+- Consider: Bullish spreads, call options, or accumulation
+- Wait for RSI to rise above 30 for confirmation"""
+            else:
+                return f"""📊 **RSI Status: NEUTRAL** (RSI = {rsi:.1f})
+- No extreme conditions
+- Continue with your current strategy
+- Watch for break of 70 (overbought) or 30 (oversold)"""
+    
+    elif any(word in query_lower for word in ['support', 'resistance', 'levels']):
+        recent_high = hist_data['High'].squeeze().tail(20).max()
+        recent_low = hist_data['Low'].squeeze().tail(20).min()
+        pivot = (recent_high + recent_low + asset_spot) / 3
+        r1 = 2 * pivot - recent_low
+        r2 = pivot + (recent_high - recent_low)
+        s1 = 2 * pivot - recent_high
+        s2 = pivot - (recent_high - recent_low)
+        
+        return f"""📐 **Key Levels for {asset_choice}**
+Current Spot: {currency}{asset_spot:,.2f}
+
+**Resistance Levels:**
+- R1: {currency}{r1:,.2f}
+- R2: {currency}{r2:,.2f}
+
+**Support Levels:**
+- S1: {currency}{s1:,.2f}
+- S2: {currency}{s2:,.2f}
+
+**Recent Range:** {currency}{recent_low:,.2f} - {currency}{recent_high:,.2f}"""
+    
+    elif any(word in query_lower for word in ['strategy', 'trade', 'position']):
+        return f"""💡 **Option Strategy Recommendation**
+
+Based on current market conditions:
+- Trend: {analysis['bias'] if analysis else 'Neutral'}
+- Volatility: {garch_vol:.1f}%
+- IV Rank: {ivr_val:.0f}% (if available)
+
+**Recommended Strategies:**
+1. **{'Credit Spreads' if ivr_val and ivr_val > 50 else 'Debit Spreads'}** - Aligns with current volatility environment
+2. **{'Iron Condors' if analysis and analysis['vol_regime'] == 'Moderate' else 'Directional Strategies'}**
+3. **Always use stop-losses** - Define risk before entry
+4. **Position sizing** - Max 2-3% risk per trade
+
+Remember: Options selling requires patience and risk management!"""
+    
+    elif any(word in query_lower for word in ['morning', 'pre-market', 'setup']):
+        return f"""🌅 **Pre-Market Checklist ({datetime.now().strftime('%Y-%m-%d')})**
+
+✅ **Pre-Market Testing (by 9:00 AM)**
+- Check overnight global markets
+- Identify key support/resistance levels
+- Note any major news/events
+
+✅ **Global Market Check**
+- US Market closing: {'Green' if btc_lp and btc_lp.get('change', 0) > 0 else 'Red'} 
+- Dollar Index trend
+- Crude Oil movement
+- INR movement vs USD
+
+✅ **Setup for Today**
+- Expected range: {currency}{asset_spot - selected_analysis['daily_move'] if selected_analysis else 0:,.2f} - {currency}{asset_spot + selected_analysis['daily_move'] if selected_analysis else 0:,.2f}
+- Volatility regime: {analysis['vol_regime'] if analysis else 'Moderate'}
+- Key levels identified above
+
+**Action Items:**
+1. Complete pre-market analysis
+2. Mark key levels on charts
+3. Prepare trade plan for both directions"""
+    
+    else:
+        return f"""🤖 **AI Trading Assistant**
+
+I can help you with:
+- 📈 **Market Analysis**: Ask about "trend", "volatility", or "RSI"
+- 📊 **Technical Levels**: Ask for "support/resistance" or "key levels"
+- 💡 **Strategy Suggestions**: Ask for "strategy" or "trade ideas"
+- 🌅 **Pre-Market Setup**: Ask about "morning routine" or "pre-market"
+
+**Current Market
