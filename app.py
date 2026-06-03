@@ -18,20 +18,43 @@ st.set_page_config(
 # Shared utilities
 # -----------------------------
 @st.cache_data(ttl=60 * 60)
-def yf_download(tickers, *, period=None, start=None, end=None, interval=None):
+def yf_download(
+    tickers,
+    *,
+    period=None,
+    start=None,
+    end=None,
+    interval=None,
+    threads: bool = True,
+    proxy: str | None = None,
+):
     """
     Cached wrapper over yfinance.download with stable defaults.
     """
-    return yf.download(
-        tickers,
-        period=period,
-        start=start,
-        end=end,
-        interval=interval,
-        progress=False,
-        auto_adjust=False,
-        threads=True,
-    )
+    def _call(_threads: bool):
+        return yf.download(
+            tickers,
+            period=period,
+            start=start,
+            end=end,
+            interval=interval,
+            progress=False,
+            auto_adjust=False,
+            threads=_threads,
+            proxy=proxy or None,
+        )
+
+    # Sometimes Yahoo blocks / rate-limits and yfinance can fail sporadically.
+    # We try twice: (1) user-selected threads option, (2) fallback to threads=False.
+    try:
+        df = _call(threads)
+        if getattr(df, "empty", True) and threads:
+            df = _call(False)
+        return df
+    except Exception:
+        if threads:
+            return _call(False)
+        raise
 
 
 def _safe_squeeze(series_or_df):
@@ -55,6 +78,7 @@ def _new_fig():
 def _st_error_block(msg: str, exc: Exception | None = None):
     st.error(msg)
     if exc is not None:
+        st.caption(f"Error: `{type(exc).__name__}: {exc}`")
         with st.expander("Details"):
             st.exception(exc)
 
@@ -66,6 +90,12 @@ st.sidebar.header("Inputs")
 default_nifty = st.sidebar.text_input("Nifty ticker (Yahoo)", value="^NSEI")
 default_bank = st.sidebar.text_input("Bank Nifty ticker (Yahoo)", value="^NSEBANK")
 default_vix = st.sidebar.text_input("India VIX ticker (Yahoo)", value="^INDIAVIX")
+
+st.sidebar.divider()
+st.sidebar.subheader("Yahoo download settings")
+YF_THREADS = st.sidebar.toggle("Use multi-thread download", value=True)
+YF_PROXY = st.sidebar.text_input("Proxy (optional)", value="", help="Example: http://user:pass@host:port")
+SHOW_DIAGNOSTICS = st.sidebar.toggle("Show diagnostics", value=False)
 
 st.sidebar.divider()
 st.sidebar.caption(
@@ -87,7 +117,10 @@ def module_correlation(nifty_ticker: str, bank_ticker: str):
         rolling_window = st.number_input("Rolling correlation window (days)", 5, 120, 20, 1, key="corr_window")
 
     try:
-        data = yf_download([nifty_ticker, bank_ticker], period=period)
+        data = yf_download([nifty_ticker, bank_ticker], period=period, threads=YF_THREADS, proxy=YF_PROXY or None)
+        if SHOW_DIAGNOSTICS:
+            st.write("Raw columns:", data.columns)
+            st.dataframe(data.tail(5))
         close = data["Close"] if isinstance(data.columns, pd.MultiIndex) else data[["Close"]]
         close = close.dropna()
         close = close.rename(columns={nifty_ticker: "Nifty 50", bank_ticker: "Bank Nifty"})
@@ -203,8 +236,11 @@ def module_expected_move(nifty_ticker: str, vix_ticker: str):
         vix_period = st.selectbox("VIX period", ["5d", "1mo"], index=0, key="em_v_period")
 
     try:
-        nifty_data = yf_download(nifty_ticker, period=nifty_period)
-        vix_data = yf_download(vix_ticker, period=vix_period)
+        nifty_data = yf_download(nifty_ticker, period=nifty_period, threads=YF_THREADS, proxy=YF_PROXY or None)
+        vix_data = yf_download(vix_ticker, period=vix_period, threads=YF_THREADS, proxy=YF_PROXY or None)
+        if SHOW_DIAGNOSTICS:
+            st.write("Nifty columns:", nifty_data.columns)
+            st.write("VIX columns:", vix_data.columns)
     except Exception as e:
         _st_error_block("Failed to download Nifty/VIX data.", e)
         return
@@ -287,7 +323,9 @@ def module_hurst(nifty_ticker: str):
         window = st.number_input("Rolling window (days)", 30, 200, 60, 5, key="hurst_window")
 
     try:
-        data = yf_download(nifty_ticker, period=period)
+        data = yf_download(nifty_ticker, period=period, threads=YF_THREADS, proxy=YF_PROXY or None)
+        if SHOW_DIAGNOSTICS:
+            st.write("Raw columns:", data.columns)
     except Exception as e:
         _st_error_block("Failed to download Nifty data.", e)
         return
@@ -366,7 +404,9 @@ def module_ivr_ivp(vix_ticker: str):
     period = st.selectbox("Data period", ["6mo", "1y", "2y"], index=1, key="ivr_period")
 
     try:
-        data = yf_download(vix_ticker, period=period)
+        data = yf_download(vix_ticker, period=period, threads=YF_THREADS, proxy=YF_PROXY or None)
+        if SHOW_DIAGNOSTICS:
+            st.write("Raw columns:", data.columns)
     except Exception as e:
         _st_error_block("Failed to download India VIX data.", e)
         return
@@ -431,7 +471,9 @@ def module_liquidity_sweep(nifty_ticker: str):
         interval = st.selectbox("Interval", ["15m", "30m"], index=0, key="liq_interval")
 
     try:
-        data = yf_download(nifty_ticker, period=period, interval=interval)
+        data = yf_download(nifty_ticker, period=period, interval=interval, threads=YF_THREADS, proxy=YF_PROXY or None)
+        if SHOW_DIAGNOSTICS:
+            st.write("Raw columns:", data.columns)
     except Exception as e:
         _st_error_block("Failed to download intraday data.", e)
         return
@@ -624,7 +666,9 @@ def module_parkinson(nifty_ticker: str):
 
     period = st.selectbox("Data period", ["6mo", "1y", "2y"], index=1, key="park_period")
     try:
-        data = yf_download(nifty_ticker, period=period)
+        data = yf_download(nifty_ticker, period=period, threads=YF_THREADS, proxy=YF_PROXY or None)
+        if SHOW_DIAGNOSTICS:
+            st.write("Raw columns:", data.columns)
     except Exception as e:
         _st_error_block("Failed to download Nifty data.", e)
         return
@@ -665,7 +709,15 @@ def module_volatility_cone(nifty_ticker: str):
     windows = [10, 20, 30, 60, 90, 120, 180, 252]
 
     try:
-        data = yf_download(nifty_ticker, start=start_date.isoformat(), end=end_date.isoformat())
+        data = yf_download(
+            nifty_ticker,
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+            threads=YF_THREADS,
+            proxy=YF_PROXY or None,
+        )
+        if SHOW_DIAGNOSTICS:
+            st.write("Raw columns:", data.columns)
     except Exception as e:
         _st_error_block("Failed to download historical data.", e)
         return
@@ -709,8 +761,11 @@ def module_vrp(nifty_ticker: str, vix_ticker: str):
     hv_window = st.number_input("Realized vol window (days)", 5, 60, 20, 1, key="vrp_window")
 
     try:
-        nifty_data = yf_download(nifty_ticker, period=period)
-        vix_data = yf_download(vix_ticker, period=period)
+        nifty_data = yf_download(nifty_ticker, period=period, threads=YF_THREADS, proxy=YF_PROXY or None)
+        vix_data = yf_download(vix_ticker, period=period, threads=YF_THREADS, proxy=YF_PROXY or None)
+        if SHOW_DIAGNOSTICS:
+            st.write("Nifty columns:", nifty_data.columns)
+            st.write("VIX columns:", vix_data.columns)
     except Exception as e:
         _st_error_block("Failed to download data.", e)
         return
@@ -819,4 +874,3 @@ with tabs[7]:
     module_volatility_cone(default_nifty)
 with tabs[8]:
     module_vrp(default_nifty, default_vix)
-
