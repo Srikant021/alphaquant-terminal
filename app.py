@@ -257,8 +257,8 @@ def create_main_price_chart(chart_data, ticker_name, currency="$"):
         low=chart_data['Low'],
         close=chart_data['Close'],
         name='OHLC',
-        increasing=dict(line=dict(color='#00c878', width=1), fillcolor='#00c87888'),
-        decreasing=dict(line=dict(color='#ff4d6d', width=1), fillcolor='#ff4d6d88'),
+        increasing=dict(line=dict(color='#00c878', width=1)),
+        decreasing=dict(line=dict(color='#ff4d6d', width=1)),
     ), row=1, col=1, secondary_y=False)
 
     # ── Bollinger Bands ───────────────────────────────────────────────────────
