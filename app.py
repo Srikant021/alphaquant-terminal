@@ -236,8 +236,8 @@ def create_main_price_chart(chart_data, ticker_name, currency="$"):
 
     # Volume colour
     vol_colors = [
-        '#00c87844' if float(chart_data['Close'].iloc[i]) >= float(chart_data['Open'].iloc[i])
-        else '#ff4d4d44'
+        'rgba(0,200,120,0.27)' if float(chart_data['Close'].iloc[i]) >= float(chart_data['Open'].iloc[i])
+        else 'rgba(255,77,77,0.27)'
         for i in range(len(chart_data))
     ]
 
