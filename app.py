@@ -1,4 +1,4 @@
-# AlphaQuant Terminal — Final Complete Working Version
+# AlphaQuant Terminal — Final Complete Working Version (Hurst Fixed)
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,11 +9,10 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import time
 import os
-import calendar
 
 st.set_page_config(page_title="AlphaQuant Terminal", layout="wide", initial_sidebar_state="expanded")
 
-# Custom CSS for styling
+# Custom CSS
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -37,7 +36,7 @@ if 'selected_market' not in st.session_state:
 if 'active_tab' not in st.session_state:
     st.session_state['active_tab'] = 'Dashboard'
 
-# Technical Indicators
+# ========== TECHNICAL INDICATORS ==========
 def compute_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -45,8 +44,7 @@ def compute_rsi(series, period=14):
     avg_gain = gain.rolling(window=period).mean()
     avg_loss = loss.rolling(window=period).mean()
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    return 100 - (100 / (1 + rs))
 
 def compute_macd(series, fast=12, slow=26, signal=9):
     ema_fast = series.ewm(span=fast, adjust=False).mean()
@@ -64,15 +62,47 @@ def compute_bbands(series, period=20, std_dev=2):
     return upper, sma, lower
 
 def calculate_hurst_exponent(ts):
+    """Robust Hurst exponent using R/S analysis."""
+    ts = np.array(ts, dtype=float)
+    ts = ts[~np.isnan(ts)]
     if len(ts) < 20:
         return np.nan
-    lags = range(2, min(20, len(ts) // 5))
-    if len(lags) < 3:
+    max_lag = len(ts) // 4
+    if max_lag < 2:
+        return np.nan
+    lags = range(2, min(20, max_lag))
+    if len(lags) < 2:
         return np.nan
     try:
-        tau = [np.sqrt(np.std(np.subtract(ts[lag:], ts[:-lag]))) for lag in lags]
-        return np.polyfit(np.log(list(lags)), np.log(tau), 1)[0] * 2.0
-    except:
+        rs_vals = []
+        for lag in lags:
+            n_windows = len(ts) // lag
+            if n_windows < 1:
+                continue
+            rs_window = []
+            for i in range(n_windows):
+                window = ts[i*lag:(i+1)*lag]
+                if len(window) < lag:
+                    continue
+                mean_win = np.mean(window)
+                cumsum = np.cumsum(window - mean_win)
+                R = np.max(cumsum) - np.min(cumsum)
+                S = np.std(window, ddof=1)
+                if S > 0:
+                    rs_window.append(R / S)
+            if rs_window:
+                rs_vals.append(np.mean(rs_window))
+            else:
+                rs_vals.append(np.nan)
+        rs_vals = np.array(rs_vals)
+        valid = ~np.isnan(rs_vals)
+        if np.sum(valid) < 2:
+            return np.nan
+        log_lags = np.log([lags[i] for i in range(len(lags)) if valid[i]])
+        log_rs = np.log(rs_vals[valid])
+        H = np.polyfit(log_lags, log_rs, 1)[0]
+        return H
+    except Exception:
         return np.nan
 
 def calculate_parkinson_volatility(high_px, low_px, periods_per_year=252):
@@ -82,6 +112,19 @@ def calculate_parkinson_volatility(high_px, low_px, periods_per_year=252):
     n = len(log_hl)
     variance = log_hl.sum() / (4 * n * np.log(2))
     return np.sqrt(variance * periods_per_year) * 100
+
+def compute_iv_rank_percentile(close_px, window=20):
+    if len(close_px) < window:
+        return 50.0, 50.0
+    log_ret = np.log(close_px / close_px.shift(1)).dropna()
+    rv = log_ret.rolling(window).std() * np.sqrt(252) * 100
+    cur = rv.iloc[-1] if not rv.empty else 0
+    if rv.empty or np.isnan(cur):
+        return 50.0, 50.0
+    vmin, vmax = rv.min(), rv.max()
+    ivr = ((cur - vmin) / (vmax - vmin)) * 100 if vmax != vmin else 50.0
+    ivp = (rv < cur).sum() / len(rv) * 100
+    return ivr, ivp
 
 def yf_download_retry(*args, max_retries=2, **kwargs):
     for _ in range(max_retries):
@@ -126,19 +169,6 @@ def live_price(ticker):
         'ts': datetime.now().strftime('%H:%M:%S')
     }
 
-def compute_iv_rank_percentile(close_px, window=20):
-    if len(close_px) < window:
-        return 50.0, 50.0
-    log_ret = np.log(close_px / close_px.shift(1)).dropna()
-    rv = log_ret.rolling(window).std() * np.sqrt(252) * 100
-    cur = rv.iloc[-1] if not rv.empty else 0
-    if rv.empty or np.isnan(cur):
-        return 50.0, 50.0
-    vmin, vmax = rv.min(), rv.max()
-    ivr = ((cur - vmin) / (vmax - vmin)) * 100 if vmax != vmin else 50.0
-    ivp = (rv < cur).sum() / len(rv) * 100
-    return ivr, ivp
-
 @st.cache_data(ttl=300)
 def get_india_vix(period="5d"):
     v = yf_download_retry("^INDIAVIX", period=period)
@@ -146,7 +176,7 @@ def get_india_vix(period="5d"):
         return None
     return v['Close'].squeeze()
 
-# Chart functions
+# ========== CHART FUNCTIONS ==========
 def chart_correlation():
     selected_market = st.session_state['selected_market']
     if selected_market == "Crypto":
@@ -184,7 +214,7 @@ def chart_correlation():
     plt.tight_layout()
     return fig
 
-def chart_expected_move(asset_spot, garch_vol, trading_days):
+def chart_expected_move(asset_spot, garch_vol, trading_days, hist_data):
     recent_close = hist_data['Close'].squeeze().tail(20)
     daily_vol = garch_vol / 100 / np.sqrt(trading_days)
     dm = asset_spot * daily_vol
@@ -209,32 +239,34 @@ def chart_expected_move(asset_spot, garch_vol, trading_days):
     return fig
 
 def chart_hurst(hist_data):
-    close = hist_data['Close'].squeeze()
-    log_p = np.log(close)
-    
-    def hurst_calc(x):
-        return calculate_hurst_exponent(x) if len(x) >= 20 else np.nan
-    
-    hurst_series = log_p.rolling(60).apply(hurst_calc, raw=False)
-    df = pd.DataFrame({'Close': close, 'Hurst': hurst_series}).dropna()
-    
-    if df.empty:
+    if hist_data.empty:
         return None
+    close = hist_data['Close'].squeeze()
+    if len(close) < 60:
+        return None
+    log_p = np.log(close)
+    hurst_series = log_p.rolling(60).apply(
+        lambda x: calculate_hurst_exponent(x.values) if len(x.dropna()) >= 20 else np.nan,
+        raw=False
+    ).dropna()
+    if hurst_series.empty:
+        return None
+    common_idx = hurst_series.index
+    price_aligned = close.loc[common_idx]
     
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), gridspec_kw={'height_ratios': [2, 1]})
-    ax1.plot(df.index, df['Close'], color='white', linewidth=1.5)
-    ax1.set_title("Price")
+    ax1.plot(price_aligned.index, price_aligned.values, color='white', linewidth=1.5)
+    ax1.set_title("Price (Log Scale)")
     ax1.grid(True, alpha=0.3)
     
-    ax2.plot(df.index, df['Hurst'], color='cyan', linewidth=2)
-    ax2.axhline(0.55, color='green', linestyle='--', linewidth=1.5, label='Trending')
-    ax2.axhline(0.45, color='red', linestyle='--', linewidth=1.5, label='Mean-Reverting')
+    ax2.plot(hurst_series.index, hurst_series.values, color='cyan', linewidth=2)
+    ax2.axhline(0.55, color='green', linestyle='--', linewidth=1.5, label='Trending (>0.55)')
+    ax2.axhline(0.45, color='red', linestyle='--', linewidth=1.5, label='Mean-Reverting (<0.45)')
     ax2.axhline(0.50, color='gray', linestyle='-', alpha=0.5)
     ax2.set_ylim(0.3, 0.7)
     ax2.set_ylabel("Hurst Exponent")
-    ax2.legend()
+    ax2.legend(loc='upper right')
     ax2.grid(True, alpha=0.3)
-    
     plt.tight_layout()
     return fig
 
@@ -243,10 +275,8 @@ def chart_ivr(hist_data, trading_days):
     log_ret = np.log(close / close.shift(1)).dropna()
     rolling_vol = log_ret.rolling(20).std() * np.sqrt(trading_days) * 100
     vol_series = rolling_vol.dropna()
-    
     if vol_series.empty:
         return None
-    
     cur = vol_series.iloc[-1]
     vmin, vmax = vol_series.min(), vol_series.max()
     ivr = ((cur - vmin) / (vmax - vmin)) * 100 if vmax != vmin else 50
@@ -269,7 +299,6 @@ def chart_liquidity(ticker):
         return None
     intra = flatten_df(intra).tail(60)
     df = intra.copy()
-    
     df['Prev_High'] = df['High'].rolling(20).max().shift(1)
     df['Prev_Low'] = df['Low'].rolling(20).min().shift(1)
     df['Supply'] = (df['High'] > df['Prev_High']) & (df['Close'] < df['Prev_High'])
@@ -277,12 +306,10 @@ def chart_liquidity(ticker):
     
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(df.index, df['Close'], color='white', linewidth=1.5)
-    
     supply_idx = df.index[df['Supply']]
     demand_idx = df.index[df['Demand']]
     ax.scatter(supply_idx, df['High'][df['Supply']] + 10, color='red', marker='v', s=100, label='Supply Sweep')
     ax.scatter(demand_idx, df['Low'][df['Demand']] - 10, color='green', marker='^', s=100, label='Demand Sweep')
-    
     ax.legend()
     ax.set_title("Liquidity Sweeps")
     ax.grid(True, alpha=0.3)
@@ -293,7 +320,6 @@ def chart_parkinson(hist_data, trading_days):
     high = hist_data['High'].squeeze().tail(60)
     low = hist_data['Low'].squeeze().tail(60)
     park_val = calculate_parkinson_volatility(high, low, trading_days)
-    
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.bar(['Parkinson Volatility'], [park_val], color='orange', width=0.5)
     ax.set_ylabel('%')
@@ -307,7 +333,6 @@ def chart_cone(hist_data, trading_days):
     log_ret = np.log(close / close.shift(1)).dropna()
     windows = [10, 20, 30, 60, 90, 120, 180, 252]
     max_v, min_v, med_v, cur_v = [], [], [], []
-    
     for w in windows:
         rv = log_ret.rolling(w).std() * np.sqrt(trading_days) * 100
         if not rv.dropna().empty:
@@ -315,7 +340,6 @@ def chart_cone(hist_data, trading_days):
             min_v.append(rv.min())
             med_v.append(rv.median())
             cur_v.append(rv.iloc[-1])
-    
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(windows, max_v, 'o-', color='red', linewidth=2, markersize=8, label='Maximum')
     ax.plot(windows, min_v, 'o-', color='green', linewidth=2, markersize=8, label='Minimum')
@@ -340,19 +364,16 @@ EXPLANATIONS = {
     "Volatility Cone": "**Volatility Cone** shows current vol vs historical ranges. Yellow = current position."
 }
 
-# ───── SIDEBAR ─────
+# ========== SIDEBAR ==========
 with st.sidebar:
     st.markdown("## AlphaQuant Terminal")
-    
     market_type = st.radio("Market", ["Crypto", "Indian Market"], horizontal=True,
                            index=0 if st.session_state['selected_market'] == 'Crypto' else 1)
     if market_type != st.session_state['selected_market']:
         st.session_state['selected_market'] = market_type
         st.cache_data.clear()
         st.rerun()
-    
     selected_market = st.session_state['selected_market']
-    
     if selected_market == "Crypto":
         tickers = {'Bitcoin': 'BTC-USD', 'Ethereum': 'ETH-USD', 'Dogecoin': 'DOGE-USD', 'XRP': 'XRP-USD'}
         trading_days = 365
@@ -361,27 +382,22 @@ with st.sidebar:
         tickers = {'Nifty 50': '^NSEI', 'Sensex': '^BSESN', 'Bank Nifty': '^NSEBANK'}
         trading_days = 252
         currency = "₹"
-    
     asset_choice = st.selectbox("Asset", list(tickers.keys()))
     ticker = tickers[asset_choice]
-    
     st.markdown("---")
     tab_options = ["Dashboard", "Technical"]
     active_tab = st.radio("Navigate", tab_options, index=tab_options.index(st.session_state['active_tab']))
     if active_tab != st.session_state['active_tab']:
         st.session_state['active_tab'] = active_tab
         st.rerun()
-    
     st.markdown("---")
     st.session_state['live_mode'] = st.checkbox("Live Mode", value=st.session_state['live_mode'])
-    
     if st.button("Refresh"):
         st.cache_data.clear()
         st.rerun()
 
-# ───── DATA LOADING ─────
+# ========== DATA LOADING ==========
 hist_data = fetch_long_hist(ticker)
-
 lp = live_price(ticker)
 if lp is None and not hist_data.empty:
     close = hist_data['Close'].squeeze()
@@ -394,13 +410,10 @@ if lp is None and not hist_data.empty:
         lp = {'spot': 0, 'prev_close': 0, 'change': 0, 'pct': 0, 'ts': 'unavailable'}
 
 asset_spot = lp['spot']
-garch_vol = 80  # placeholder for GARCH
-
-# Calculate metrics if data available
+garch_vol = 80  # placeholder (GARCH not implemented)
 park_vol = None
 ivr_val = None
 ivp_val = None
-
 if not hist_data.empty and all(c in hist_data.columns for c in ['High', 'Low', 'Close']):
     high_series = hist_data['High'].squeeze().tail(60)
     low_series = hist_data['Low'].squeeze().tail(60)
@@ -408,19 +421,16 @@ if not hist_data.empty and all(c in hist_data.columns for c in ['High', 'Low', '
     park_vol = calculate_parkinson_volatility(high_series, low_series, trading_days)
     ivr_val, ivp_val = compute_iv_rank_percentile(close_series)
 
-# ───── ROUTING ─────
+# ========== ROUTING ==========
 if st.session_state['active_tab'] == "Dashboard":
     st.title("Dashboard")
-    
     tf = st.radio("Chart Timeframe", ["1D", "5m", "15m", "1h"], horizontal=True)
     period_map = {"1D": ("6mo", "1d"), "5m": ("5d", "5m"), "15m": ("5d", "15m"), "1h": ("1mo", "1h")}
     period, interval = period_map[tf]
-    
     df_chart = yf_download_retry(ticker, period=period, interval=interval)
     if not df_chart.empty:
         df_chart = flatten_df(df_chart).tail(60 if tf == "1D" else 100)
         bb_upper, bb_mid, bb_lower = compute_bbands(df_chart['Close'])
-        
         fig = make_subplots(specs=[[{"secondary_y": False}]])
         fig.add_trace(go.Candlestick(
             x=df_chart.index,
@@ -430,16 +440,8 @@ if st.session_state['active_tab'] == "Dashboard":
             close=df_chart['Close'],
             name='Price'
         ))
-        fig.add_trace(go.Scatter(
-            x=df_chart.index, y=bb_upper,
-            line=dict(color='gray', width=1, dash='dot'),
-            name='BB Upper'
-        ))
-        fig.add_trace(go.Scatter(
-            x=df_chart.index, y=bb_lower,
-            line=dict(color='gray', width=1, dash='dot'),
-            name='BB Lower'
-        ))
+        fig.add_trace(go.Scatter(x=df_chart.index, y=bb_upper, line=dict(color='gray', width=1, dash='dot'), name='BB Upper'))
+        fig.add_trace(go.Scatter(x=df_chart.index, y=bb_lower, line=dict(color='gray', width=1, dash='dot'), name='BB Lower'))
         fig.update_layout(template='plotly_dark', height=500, xaxis_rangeslider_visible=False, hovermode='x unified')
         st.plotly_chart(fig, use_container_width=True)
     
@@ -457,17 +459,15 @@ if st.session_state['active_tab'] == "Dashboard":
 
 elif st.session_state['active_tab'] == "Technical":
     st.title("Full Technical Analysis")
-    
     modules = [
         ("Correlation", chart_correlation, "Correlation"),
-        ("Expected Move", lambda: chart_expected_move(asset_spot, garch_vol, trading_days), "Expected Move"),
+        ("Expected Move", lambda: chart_expected_move(asset_spot, garch_vol, trading_days, hist_data), "Expected Move"),
         ("Hurst Exponent", lambda: chart_hurst(hist_data), "Hurst Exponent"),
         ("IV Rank & IV Percentile", lambda: chart_ivr(hist_data, trading_days), "IV Rank & IV Percentile"),
         ("Liquidity Detector", lambda: chart_liquidity(ticker), "Liquidity Detector"),
         ("Parkinson Volatility", lambda: chart_parkinson(hist_data, trading_days), "Parkinson Volatility"),
         ("Volatility Cone", lambda: chart_cone(hist_data, trading_days), "Volatility Cone")
     ]
-    
     for i in range(0, len(modules), 2):
         cols = st.columns(2)
         for j in range(2):
