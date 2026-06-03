@@ -159,7 +159,7 @@ def ema(close, span):
 def vwap(df):
     """VWAP for the visible window."""
     typical = (df['High'] + df['Low'] + df['Close']) / 3
-    vol = df['Volume'].replace(0, np.nan).fillna(method='ffill')
+    vol = df['Volume'].replace(0, np.nan).ffill()
     cum_vol = vol.cumsum()
     cum_tp_vol = (typical * vol).cumsum()
     return cum_tp_vol / cum_vol
