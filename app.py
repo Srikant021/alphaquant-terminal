@@ -1,8 +1,11 @@
-# crypto_alphaquant.py
-# AlphaQuant Terminal — merged, hardened, and ML-explainable version
+# crypto_alphaquant_with_rolling_metrics_and_explanation.py
+# AlphaQuant Terminal — merged, hardened, ML-explainable version with rolling precision/recall
+# and practical explanation text added to the ML tab.
 # - Preserves original ticker selection behavior
 # - Adds safe fetching, retry/backoff, prediction alignment, optional calibration, logging
 # - Adds explain_ml_prediction(...) to provide human-readable reasons for ML signals
+# - Adds configurable rolling windows (7/30/90) and plots Rolling Accuracy, Precision, Recall
+# - Adds practical, plain-language explanation of rolling metrics in the ML tab
 
 import logging
 import time
@@ -975,7 +978,7 @@ def plot_multi_ticker_comparison(ticker_list, period="1y"):
 # ─────────────────────────────────────────────
 # MAIN TABS (original layout preserved; ML uses indicator params)
 # ─────────────────────────────────────────────
-main_tab1, main_tab2 = st.tabs([
+main_tab1, main_tab3 = st.tabs([
     "📈 Dashboard",
     "🤖 ML Signal",
 ])
@@ -1214,6 +1217,7 @@ with main_tab1:
     </div>""", unsafe_allow_html=True)
 
 
+
     st.markdown("""
     The **Hurst Exponent (H)** quantifies long-range memory / self-similarity in a price series.
 
@@ -1271,7 +1275,7 @@ with main_tab1:
     </div>""", unsafe_allow_html=True)
 
 # TAB 3 — ML SIGNAL
-with main_tab2:
+with main_tab3:
     st.title("ML Signal — Random Forest")
 
     if not ML_AVAILABLE:
@@ -1408,42 +1412,129 @@ with main_tab2:
                             except Exception as e:
                                 logger.warning(f"Could not compute feature importances: {e}")
 
-                            # Rolling accuracy
-                            st.markdown('<div class="section-header">Rolling 30-Day Accuracy</div>', unsafe_allow_html=True)
-                            if hist_2y is not None and len(hist_2y) >= 200:
+                            # Rolling metrics: configurable windows and precision/recall
+                            st.markdown('<div class="section-header">Rolling Performance (Accuracy / Precision / Recall)</div>', unsafe_allow_html=True)
+
+                            # User selects windows to display
+                            windows = st.multiselect(
+                                "Select rolling windows (days) to display",
+                                options=[7, 30, 90],
+                                default=[7, 30, 90],
+                                help="Choose one or more rolling windows to compare short/medium/long-term performance."
+                            )
+
+                            # Compute predictions and true labels across hist_2y if available
+                            if hist_2y is None or len(hist_2y) < 200:
+                                st.info("Need 2 years of data to compute rolling metrics. Provide more history.")
+                            else:
                                 feat_all = build_ml_features(hist_2y, rsi_period=rsi_period, boll_period=boll_period, boll_std=boll_std, atr_period=atr_period)
                                 target_all = (hist_2y['Close'].squeeze().shift(-1) > hist_2y['Close'].squeeze()).astype(int).reindex(feat_all.index).dropna()
                                 feat_all = feat_all.reindex(target_all.index)
-                                try:
-                                    X_all_s = scaler.transform(feat_all)
-                                    preds_all = model.predict(X_all_s)
-                                    correct = pd.Series((preds_all == target_all.values).astype(int), index=target_all.index)
-                                    roll_acc = correct.rolling(30).mean() * 100
-                                    roll_acc = roll_acc.dropna()
-                                    if not roll_acc.empty:
-                                        fig_ra = go.Figure()
-                                        fig_ra.add_hline(y=50, line_dash='dash',
-                                                         line_color='rgba(255,255,255,0.25)',
-                                                         annotation_text='50% (random)')
-                                        ra_colors = ['#00c878' if v >= 55 else '#ffd700' if v >= 50 else '#ff4d6d'
-                                                     for v in roll_acc.values]
-                                        for i in range(1, len(roll_acc)):
-                                            fig_ra.add_trace(go.Scatter(
-                                                x=roll_acc.index[i - 1:i + 1],
-                                                y=roll_acc.values[i - 1:i + 1],
-                                                mode='lines', line=dict(color=ra_colors[i], width=2),
-                                                showlegend=False, hoverinfo='skip'))
-                                        fig_ra.update_layout(
-                                            template='plotly_dark', paper_bgcolor='#080d12',
-                                            plot_bgcolor='#0a1018',
-                                            title='<b>30-Day Rolling Accuracy</b>',
-                                            yaxis=dict(range=[30, 80], gridcolor='rgba(255,255,255,0.04)'),
-                                            xaxis=dict(gridcolor='rgba(255,255,255,0.04)'),
-                                            height=300, margin=dict(l=60, r=20, t=50, b=40),
-                                        )
-                                        st.plotly_chart(fig_ra, use_container_width=True)
-                                except Exception as e:
-                                    logger.warning(f"Could not compute rolling accuracy: {e}")
+                                if feat_all.empty:
+                                    st.info("No aligned historical features for rolling metrics.")
+                                else:
+                                    try:
+                                        # Align columns
+                                        if train_cols is not None:
+                                            feat_all = feat_all.reindex(columns=train_cols)
+                                        X_all_s = scaler.transform(feat_all)
+                                        preds_all = model.predict(X_all_s)
+                                        df_perf = pd.DataFrame({
+                                            'pred': preds_all,
+                                            'true': target_all.values
+                                        }, index=target_all.index)
+                                        df_perf['correct'] = (df_perf['pred'] == df_perf['true']).astype(int)
+                                        # TP, FP, FN per row
+                                        df_perf['tp'] = ((df_perf['pred'] == 1) & (df_perf['true'] == 1)).astype(int)
+                                        df_perf['fp'] = ((df_perf['pred'] == 1) & (df_perf['true'] == 0)).astype(int)
+                                        df_perf['fn'] = ((df_perf['pred'] == 0) & (df_perf['true'] == 1)).astype(int)
+
+                                        # Prepare figure with multiple windows and metrics
+                                        fig_rm = make_subplots(rows=3, cols=1, shared_xaxes=True,
+                                                               vertical_spacing=0.06,
+                                                               subplot_titles=("Rolling Accuracy (%)", "Rolling Precision (%)", "Rolling Recall (%)"))
+
+                                        colors_map = {7: '#00c878', 30: '#ffd700', 90: '#ff4d6d'}
+                                        for w in windows:
+                                            if w <= 0:
+                                                continue
+                                            roll_correct = df_perf['correct'].rolling(window=w).mean() * 100
+                                            # Precision = TP / (TP + FP)
+                                            tp_sum = df_perf['tp'].rolling(window=w).sum()
+                                            fp_sum = df_perf['fp'].rolling(window=w).sum()
+                                            with np.errstate(divide='ignore', invalid='ignore'):
+                                                precision = (tp_sum / (tp_sum + fp_sum)) * 100
+                                                precision = precision.fillna(0)
+                                            # Recall = TP / (TP + FN)
+                                            fn_sum = df_perf['fn'].rolling(window=w).sum()
+                                            with np.errstate(divide='ignore', invalid='ignore'):
+                                                recall = (tp_sum / (tp_sum + fn_sum)) * 100
+                                                recall = recall.fillna(0)
+
+                                            fig_rm.add_trace(go.Scatter(x=roll_correct.index, y=roll_correct.values,
+                                                                        mode='lines', name=f'Acc {w}D', line=dict(color=colors_map.get(w, '#0af'), width=2)),
+                                                             row=1, col=1)
+                                            fig_rm.add_trace(go.Scatter(x=precision.index, y=precision.values,
+                                                                        mode='lines', name=f'Prec {w}D', line=dict(color=colors_map.get(w, '#0af'), width=2, dash='dash')),
+                                                             row=2, col=1)
+                                            fig_rm.add_trace(go.Scatter(x=recall.index, y=recall.values,
+                                                                        mode='lines', name=f'Rec {w}D', line=dict(color=colors_map.get(w, '#0af'), width=2, dash='dot')),
+                                                             row=3, col=1)
+
+                                        fig_rm.update_layout(template='plotly_dark', height=700, showlegend=True,
+                                                             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+                                                             margin=dict(l=60, r=20, t=80, b=40))
+                                        fig_rm.update_yaxes(range=[0, 100], gridcolor='rgba(255,255,255,0.04)')
+                                        st.plotly_chart(fig_rm, use_container_width=True)
+
+                                        st.markdown("""<div class="explanation-box">
+                                            <b>Notes:</b> 50% accuracy is random for balanced binary labels. Precision measures correctness of positive predictions; recall measures how many actual positives were captured. Use these together to judge model usefulness.
+                                        </div>""", unsafe_allow_html=True)
+
+                                        # --- Practical explanation block inserted here ---
+                                        st.markdown('<div class="section-header">Rolling Metrics — Practical Explanation</div>', unsafe_allow_html=True)
+                                        st.markdown("""
+                                        <div class="explanation-box">
+                                        <b>What each metric means (plain language)</b><br>
+                                        • <b>Accuracy</b> — the percent of days the model guessed the direction correctly (up vs down). If accuracy = 60%, the model’s direction call was right 60 out of 100 times.<br>
+                                        • <b>Precision (for bullish calls)</b> — when the model says “bull” how often was it actually up. High precision means the model’s bull calls are trustworthy.<br>
+                                        • <b>Recall (for bullish calls)</b> — of all the days that were actually up, how many did the model correctly call bull. High recall means the model catches most real up-days.<br><br>
+
+                                        <b>Why show multiple windows (7 / 30 / 90 days)</b><br>
+                                        • <b>7‑day</b>: very short term — shows the model’s recent behavior and reacts quickly to regime shifts; expect noise.<br>
+                                        • <b>30‑day</b>: medium term — balances responsiveness and stability; good for tactical decisions.<br>
+                                        • <b>90‑day</b>: long term — smooths out noise and shows structural performance trends; useful to detect persistent improvement or decay.<br><br>
+
+                                        <b>How to read the chart</b><br>
+                                        1. Look at the 50% baseline for accuracy. If accuracy is consistently near 50%, the model is no better than random.<br>
+                                        2. Compare windows: if 7‑day accuracy jumps but 30/90 stay flat, treat it as short‑term noise. If all three rise, the model may be genuinely improving.<br>
+                                        3. Use precision + recall together:<br>
+                                        &nbsp;&nbsp;• High precision, low recall → conservative model: when it says “bull” it’s usually right, but it misses many up-days (good for selective trades).<br>
+                                        &nbsp;&nbsp;• Low precision, high recall → model calls many bulls and catches most up-days but with many false positives (use filters).<br>
+                                        &nbsp;&nbsp;• Both low → model unreliable; avoid trading on it alone.<br><br>
+
+                                        <b>Practical thresholds and example actions</b><br>
+                                        • Accuracy: sustained >55% (after costs) may be useful; >60% is strong for simple direction models.<br>
+                                        • Precision: >60% means positive calls are reasonably reliable.<br>
+                                        • Recall: >60% means the model captures most real moves.<br>
+                                        • Example rule: If 30‑day accuracy >57% AND precision >60% → consider a small directional position with tight risk controls. If 7‑day spikes but 30/90 do not → wait for confirmation.<br><br>
+
+                                        <b>Common pitfalls</b><br>
+                                        • Class imbalance: accuracy can be misleading if up/down days are imbalanced — check precision/recall per class.<br>
+                                        • Overfitting to recent regime: a high 7‑day metric can be a short-lived artifact — verify with 30/90.<br>
+                                        • Ignoring costs: a model with 60% accuracy can still lose money if average losses exceed gains — simulate P&L.<br><br>
+
+                                        <b>Quick checklist</b><br>
+                                        1. Open rolling metrics and select 7/30/90.<br>
+                                        2. If 30‑day accuracy >55% and precision >60% → consider small exposure with risk controls.<br>
+                                        3. If only 7‑day shows improvement, wait for 3–5 day confirmation.<br>
+                                        4. Monitor continuously and re-evaluate after major regime shifts (high IV, big macro events).
+                                        </div>
+                                        """, unsafe_allow_html=True)
+
+                                    except Exception as e:
+                                        logger.exception(f"Could not compute rolling metrics: {e}")
+                                        st.error(f"Rolling metrics computation failed: {e}")
 
                         else:
                             st.info("Prediction not available.")
