@@ -1,5 +1,5 @@
-# alphaquant.py
-# AlphaQuant Terminal — Multi-Timeframe Canvas + Crypto Volatility + Fixed Fyers OI
+# crypto.py
+# AlphaQuant Terminal — Pure Technical Suite & Derivatives Engine
 
 import logging
 import time
@@ -26,15 +26,6 @@ if 'access_token' not in st.session_state:
     st.session_state.access_token = ""
 if 'selected_tf' not in st.session_state:
     st.session_state.selected_tf = "1D"
-
-try:
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.model_selection import TimeSeriesSplit
-    from sklearn.metrics import accuracy_score
-    ML_AVAILABLE = True
-except Exception:
-    ML_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("alphaquant")
@@ -98,37 +89,43 @@ def get_live_price(ticker):
         return None
 
 # ─────────────────────────────────────────────
-# FYERS API ENGINE
+# FYERS API ENGINE (INDESTRUCTIBLE VERSION)
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def fetch_real_fyers_oi(client_id, access_token, index_name="NIFTY", spot_price=None):
     try:
         fyers = fyersModel.FyersModel(client_id=client_id, is_async=False, token=access_token, log_path="")
         url = "https://public.fyers.in/sym_details/NSE_FO.csv"
-        cols = [
-            'FyersToken', 'Symbol', 'Instrument', 'LotSize', 'TickSize', 
-            'ImpliedMultiplier', 'DisplayName', 'Reserved', 'Expiry', 
-            'OpenTime', 'CloseTime', 'Underlying', 'Strike', 'OptType', 
-            'UnderlyingSymbol'
-        ]
         
-        df = pd.read_csv(url, names=cols, low_memory=False)
-        df['Symbol'] = df['Symbol'].astype(str).str.strip()
+        # Load without names to prevent Pandas from shifting columns if Fyers changes the file size
+        df = pd.read_csv(url, header=None, low_memory=False)
         
-        target_prefix = f"NSE:{index_name}"
-        df_opt = df[(df['Symbol'].str.startswith(target_prefix)) & (df['Symbol'].str.endswith(('CE', 'PE')))].copy()
+        # Hard-map the exact column indexes we need (Col 1: Symbol, 8: Expiry, 12: Strike, 13: OptType)
+        df = df.rename(columns={1: 'Symbol', 8: 'Expiry', 12: 'Strike', 13: 'OptType'})
+        df['Symbol'] = df['Symbol'].astype(str).str.strip().str.upper()
+        
+        # Filter strictly for CE/PE and the requested index
+        df_opt = df[df['Symbol'].str.contains(index_name, na=False) & df['Symbol'].str.endswith(('CE', 'PE'))].copy()
+        if index_name == "NIFTY":
+            df_opt = df_opt[~df_opt['Symbol'].str.contains("BANKNIFTY|FINNIFTY|MIDCPNIFTY", na=False)]
 
+        if df_opt.empty: 
+            return None, f"No symbols matched {index_name} Options. Check CSV format."
+
+        # Strict numerical casting
         df_opt['Expiry'] = pd.to_numeric(df_opt['Expiry'], errors='coerce')
         df_opt['Strike'] = pd.to_numeric(df_opt['Strike'], errors='coerce')
         df_opt = df_opt.dropna(subset=['Expiry', 'Strike'])
 
+        # Buffer to prevent local-clock timezone mismatches (last 5 days)
         current_time = int(time.time()) - (86400 * 5)
         future_expiries = sorted([e for e in df_opt['Expiry'].unique() if e > current_time])
         
         if not future_expiries: 
-            return None, "No future expiries found in Master CSV."
+            return None, "No future expiries found after filtering."
 
-        for current_expiry in future_expiries[:4]: 
+        # Hunt through up to the next 5 expiries for active Open Interest
+        for current_expiry in future_expiries[:5]: 
             df_exp = df_opt[df_opt['Expiry'] == current_expiry].copy()
             
             if spot_price and spot_price > 0:
@@ -143,6 +140,7 @@ def fetch_real_fyers_oi(client_id, access_token, index_name="NIFTY", spot_price=
             for i in range(0, len(symbols), 50):
                 batch = symbols[i:i+50]
                 response = fyers.quotes({"symbols": ",".join(batch)})
+                
                 if response and response.get("s") == "ok":
                     for item in response.get("d", []):
                         if item.get("s") == "ok":
@@ -157,8 +155,12 @@ def fetch_real_fyers_oi(client_id, access_token, index_name="NIFTY", spot_price=
                                 if strike not in strikes_data: strikes_data[strike] = {'C': 0, 'P': 0}
                                 strikes_data[strike][opt_type] += oi
             
+            # If the chain is liquid, return it immediately
             if active_oi_found:
-                exp_date = datetime.fromtimestamp(current_expiry, tz=timezone.utc).strftime('%d %b %Y')
+                try:
+                    exp_date = datetime.fromtimestamp(int(current_expiry), tz=timezone.utc).strftime('%d %b %Y')
+                except Exception:
+                    exp_date = str(current_expiry)
                 return pd.DataFrame.from_dict(strikes_data, orient='index').fillna(0).sort_index(), f"Live Expiry: {exp_date}"
 
         return None, "All checked expiries returned 0 Open Interest."
@@ -201,6 +203,7 @@ def plot_fyers_oi_profile(oi_df, spot_price, current_expiry_str):
     ax.legend(loc='upper right', facecolor='black', edgecolor='gray', fontsize=11)
 
     props = {'boxstyle': 'round,pad=0.6', 'facecolor': 'black', 'alpha': 0.9, 'edgecolor': 'gray', 'linewidth': 1.5}
+    
     text_str = (
         f"Live Spot: {spot_price:.2f}\n"
         f"Max Pain Strike: {max_pain_strike}\n"
@@ -253,7 +256,15 @@ def plot_index_divergence():
     ax2.grid(True, color='#2A2A2A', linestyle=':')
     
     props = {'boxstyle': 'round,pad=0.5', 'facecolor': 'black', 'alpha': 0.9, 'edgecolor': color_theme, 'linewidth': 1.5}
-    text_str = f"Nifty 50: {current_nifty:.2f}\nBank Nifty: {current_bank:.2f}\n20-Day Corr: {current_corr:.2f}\n---------------------------\n{regime}\n{stat_property}"
+    
+    text_str = (
+        f"Nifty 50: {current_nifty:.2f}\n"
+        f"Bank Nifty: {current_bank:.2f}\n"
+        f"20-Day Corr: {current_corr:.2f}\n"
+        f"---------------------------\n"
+        f"{regime}\n"
+        f"{stat_property}"
+    )
     
     ax1.text(0.02, 0.05, text_str, transform=ax1.transAxes, fontsize=12, verticalalignment='bottom', bbox=props, color='white', fontweight='bold')
     plt.tight_layout()
@@ -284,14 +295,20 @@ def plot_nifty_volatility():
     ax.legend(loc='upper right', facecolor='black', edgecolor='gray')
     
     props = {'boxstyle': 'round,pad=0.5', 'facecolor': 'black', 'alpha': 0.8, 'edgecolor': color_theme, 'linewidth': 1.5}
-    text_str = f"IV Rank (IVR): {ivr:.1f}%\nIV Percentile (IVP): {ivp:.1f}%\nCurrent VIX: {current_iv:.2f}\n---------------------------\nEdge: {regime}"
+    
+    text_str = (
+        f"IV Rank (IVR): {ivr:.1f}%\n"
+        f"IV Percentile (IVP): {ivp:.1f}%\n"
+        f"Current VIX: {current_iv:.2f}\n"
+        f"---------------------------\n"
+        f"Edge: {regime}"
+    )
     
     ax.text(0.02, 0.95, text_str, transform=ax.transAxes, fontsize=12, verticalalignment='top', bbox=props, color='white', fontweight='bold')
     plt.tight_layout()
     return fig
 
 def plot_crypto_volatility(ticker_name, ticker_symbol):
-    """Universal volatility plot for crypto assets"""
     data = yf.download(ticker_symbol, period="1y", progress=False)
     if data is None or data.empty: return None
     
@@ -324,7 +341,13 @@ def plot_crypto_volatility(ticker_name, ticker_symbol):
     ax.legend(loc='upper right', facecolor='black', edgecolor='gray')
     
     props = {'boxstyle': 'round,pad=0.5', 'facecolor': 'black', 'alpha': 0.8, 'edgecolor': color_theme, 'linewidth': 1.5}
-    text_str = f"Volatility Rank: {vol_rank:.1f}%\n20-Day Vol: {current_vol:.2f}%\n---------------------------\n{regime}"
+    
+    text_str = (
+        f"Volatility Rank: {vol_rank:.1f}%\n"
+        f"20-Day Vol: {current_vol:.2f}%\n"
+        f"---------------------------\n"
+        f"{regime}"
+    )
     
     ax.text(0.02, 0.95, text_str, transform=ax.transAxes, fontsize=12, verticalalignment='top', bbox=props, color='white', fontweight='bold')
     plt.tight_layout()
@@ -363,7 +386,15 @@ def plot_expected_move():
     ax.set_xticks([])
     
     props = {'boxstyle': 'round,pad=0.5', 'facecolor': 'black', 'alpha': 0.8, 'edgecolor': 'white', 'linewidth': 1.5}
-    text_str = f"Current VIX: {current_vix:.2f}\nSpot Price: {spot_price:.2f}\nExpected Move: ± {expected_move_points:.1f} pts\n---------------------------\nSafe Short Call: > {upper_bound:.0f}\nSafe Short Put: < {lower_bound:.0f}"
+    
+    text_str = (
+        f"Current VIX: {current_vix:.2f}\n"
+        f"Spot Price: {spot_price:.2f}\n"
+        f"Expected Move: ± {expected_move_points:.1f} pts\n"
+        f"---------------------------\n"
+        f"Safe Short Call: > {upper_bound:.0f}\n"
+        f"Safe Short Put: < {lower_bound:.0f}"
+    )
     
     ax.text(0.02, 0.45, text_str, transform=ax.transAxes, fontsize=12, verticalalignment='center', bbox=props, color='white', fontweight='bold')
     plt.tight_layout()
@@ -413,7 +444,13 @@ def plot_liquidity_sweep():
     ax.set_xticks([])
     
     props = {'boxstyle': 'round,pad=0.5', 'facecolor': 'black', 'alpha': 0.9, 'edgecolor': color_theme, 'linewidth': 1.5}
-    text_str = f"Live Spot Price: {current_price:.2f}\n---------------------------\n{regime}\n{stat_property}"
+    
+    text_str = (
+        f"Live Spot Price: {current_price:.2f}\n"
+        f"---------------------------\n"
+        f"{regime}\n"
+        f"{stat_property}"
+    )
     
     ax.text(0.02, 0.05, text_str, transform=ax.transAxes, fontsize=12, verticalalignment='bottom', bbox=props, color='white', fontweight='bold')
     plt.tight_layout()
@@ -430,7 +467,8 @@ def plot_hurst_regime():
         return np.polyfit(np.log(range(2, 20)), np.log(reg), 1)[0]
         
     df = pd.DataFrame({'Close': nifty_close, 'Hurst': np.log(nifty_close).rolling(window=60).apply(calculate_hurst, raw=False)}).dropna()
-    current_price, current_hurst = float(df['Close'].iloc[-1]), float(df['Hurst'].iloc[-1])
+    current_price = float(df['Close'].iloc[-1])
+    current_hurst = float(df['Hurst'].iloc[-1])
     
     if current_hurst < 0.45: 
         regime, color_theme, stat_property = "MEAN REVERTING", '#FF3333', "Range-Bound Action"
@@ -456,7 +494,14 @@ def plot_hurst_regime():
     ax2.grid(True, color='#2A2A2A', linestyle=':')
     
     props = {'boxstyle': 'round,pad=0.5', 'facecolor': 'black', 'alpha': 0.9, 'edgecolor': color_theme, 'linewidth': 1.5}
-    text_str = f"Current Nifty: {current_price:.2f}\nHurst Exponent: {current_hurst:.3f}\nRegime: {regime}\n---------------------------\n{stat_property}"
+    
+    text_str = (
+        f"Current Nifty: {current_price:.2f}\n"
+        f"Hurst Exponent: {current_hurst:.3f}\n"
+        f"Regime: {regime}\n"
+        f"---------------------------\n"
+        f"{stat_property}"
+    )
     
     ax1.text(0.02, 0.05, text_str, transform=ax1.transAxes, fontsize=12, verticalalignment='bottom', bbox=props, color='white', fontweight='bold')
     plt.tight_layout()
@@ -524,7 +569,15 @@ def plot_vrp():
     ax2.grid(True, color='#2A2A2A', linestyle=':')
     
     props = {'boxstyle': 'round,pad=0.5', 'facecolor': 'black', 'alpha': 0.9, 'edgecolor': color_theme, 'linewidth': 1.5}
-    text_str = f"VIX (Expected): {df['VIX'].iloc[-1]:.2f}%\n20-Day HV (Actual): {df['HV'].iloc[-1]:.2f}%\nVRP Spread: {current_vrp:+.2f}%\n---------------------------\n{regime}\n{stat_property}"
+    
+    text_str = (
+        f"VIX (Expected): {df['VIX'].iloc[-1]:.2f}%\n"
+        f"20-Day HV (Actual): {df['HV'].iloc[-1]:.2f}%\n"
+        f"VRP Spread: {current_vrp:+.2f}%\n"
+        f"---------------------------\n"
+        f"{regime}\n"
+        f"{stat_property}"
+    )
     
     ax1.text(0.02, 0.05, text_str, transform=ax1.transAxes, fontsize=12, verticalalignment='bottom', bbox=props, color='white', fontweight='bold')
     plt.tight_layout()
@@ -544,14 +597,9 @@ def bollinger_bands(close, period=20, std=2):
     sma = close.rolling(period).mean()
     return sma + (std * close.rolling(period).std()), sma, sma - (std * close.rolling(period).std())
 
-def compute_atr(df, period=14):
-    high, low, prev_close = df['High'], df['Low'], df['Close'].shift(1)
-    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
-    return tr.ewm(span=period, adjust=False).mean()
-
-def create_clean_ta_chart(chart_data, ticker_name, boll_period=20, boll_std=2.0, timeframe="1D"):
+def create_clean_ta_chart(chart_data, ticker_name, timeframe="1D"):
     df = chart_data.copy()
-    bb_up, _, bb_lo = bollinger_bands(df['Close'], boll_period, boll_std)
+    bb_up, _, bb_lo = bollinger_bands(df['Close'], 20, 2.0)
     
     vol_sum = df['Volume'].replace(0, np.nan).ffill().cumsum()
     vwap_line = ((df['High'] + df['Low'] + df['Close']) / 3) * vol_sum / vol_sum
@@ -577,60 +625,6 @@ def create_clean_ta_chart(chart_data, ticker_name, boll_period=20, boll_std=2.0,
     fig.update_xaxes(gridcolor='rgba(255,255,255,0.03)')
     
     return fig
-
-# ─────────────────────────────────────────────
-# ML ENGINE (FIXED PARAMETERS)
-# ─────────────────────────────────────────────
-def build_ml_features(df, boll_period=20, boll_std=2.0, atr_period=14):
-    feat = pd.DataFrame(index=df.index)
-    close = df['Close'].squeeze()
-    
-    feat['returns'] = close.pct_change()
-    feat['vol_20'] = feat['returns'].rolling(20).std()
-    bb_up, _, bb_lo = bollinger_bands(close, period=boll_period, std=boll_std)
-    feat['bb_pos'] = (close - bb_lo) / (bb_up - bb_lo + 1e-9)
-    feat['atr'] = compute_atr(df, period=atr_period)
-    feat['vol_ratio'] = df['Volume'] / df['Volume'].rolling(20).mean()
-    feat['sma_50_dist'] = (close / close.rolling(50).mean()) - 1
-    
-    return feat.dropna()
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def walk_forward_backtest(df, slippage=0.001):
-    boll_period, boll_std, atr_period = 20, 2.0, 14
-    feat = build_ml_features(df, boll_period, boll_std, atr_period)
-    target = (df['Close'].shift(-1) > df['Close']).astype(int).reindex(feat.index).dropna()
-    feat = feat.reindex(target.index)
-    returns = df['Close'].pct_change().shift(-1).reindex(target.index)
-    
-    if len(feat) < 150: return None
-    
-    tscv = TimeSeriesSplit(n_splits=5)
-    model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1)
-    all_preds, all_true, strat_returns, test_indices = [], [], [], []
-    
-    for train_idx, test_idx in tscv.split(feat):
-        X_train, X_test = feat.iloc[train_idx], feat.iloc[test_idx]
-        y_train, y_test = target.iloc[train_idx], target.iloc[test_idx]
-        ret_test = returns.iloc[test_idx]
-        
-        scaler = StandardScaler()
-        X_train_s = scaler.fit_transform(X_train)
-        X_test_s = scaler.transform(X_test)
-        
-        model.fit(X_train_s, y_train)
-        preds = model.predict(X_test_s)
-        
-        pos = pd.Series(preds, index=y_test.index)
-        pos_change = pos.diff().abs().fillna(1 if pos.iloc[0] == 1 else 0)
-        pnl = (pos * ret_test) - (pos_change * slippage)
-        
-        strat_returns.extend(pnl.values)
-        all_preds.extend(preds)
-        all_true.extend(y_test.values)
-        test_indices.extend(y_test.index)
-        
-    return pd.DataFrame({'pred': all_preds, 'true': all_true, 'strat_ret': strat_returns, 'bh_ret': returns.loc[test_indices].values}, index=test_indices)
 
 # ─────────────────────────────────────────────
 # CONTROL SIDEBAR & AUTHENTICATION ENGINE
@@ -752,24 +746,6 @@ with main_tab1:
         fig_comprehensive = create_clean_ta_chart(hist_tf, selected_asset, timeframe=st.session_state.selected_tf)
         if fig_comprehensive: 
             st.plotly_chart(fig_comprehensive, use_container_width=True)
-    
-    st.markdown("---")
-    st.markdown("### Walk-Forward Statistical Backtest")
-    if ML_AVAILABLE:
-        with st.spinner("Processing Matrix Evaluator..."):
-            df_perf = walk_forward_backtest(hist_1y)
-        if df_perf is not None:
-            acc = accuracy_score(df_perf['true'], df_perf['pred']) * 100
-            st.success(f"Out-Of-Sample Prediction Accuracy: **{acc:.1f}%**")
-            
-            df_perf['cum_strat'] = (1 + df_perf['strat_ret']).cumprod() - 1
-            df_perf['cum_bh'] = (1 + df_perf['bh_ret']).cumprod() - 1
-            
-            fig_pnl = go.Figure()
-            fig_pnl.add_trace(go.Scattergl(x=df_perf.index, y=df_perf['cum_strat']*100, name='AlphaQuant ML Vector Strategy', line=dict(color='#00e5ff', width=2)))
-            fig_pnl.add_trace(go.Scattergl(x=df_perf.index, y=df_perf['cum_bh']*100, name='Passive Benchmark Base', line=dict(color='rgba(255,255,255,0.4)', width=1.5)))
-            fig_pnl.update_layout(template='plotly_dark', paper_bgcolor='#080d12', height=400)
-            st.plotly_chart(fig_pnl, use_container_width=True)
 
 with main_tab2:
     if market == "Indian Market" and st.session_state.fyers_authenticated:
@@ -787,7 +763,6 @@ with main_tab2:
 with main_tab3:
     if market == "Indian Market":
         with st.spinner("Processing Volatility & Structural Diagnostics..."):
-            # Render Parkinson Risk Metrics at the top
             try:
                 N, p_vol, c2c_vol = calc_parkinson_vol()
                 st.markdown("### Parkinson Estimator (Intraday Risk)")
@@ -799,7 +774,6 @@ with main_tab3:
             except Exception: 
                 pass
             
-            # Render 6 charts in a 2-column grid
             c1, c2 = st.columns(2)
             with c1: 
                 st.pyplot(plot_nifty_volatility())
@@ -821,7 +795,6 @@ with main_tab3:
                 if fig_btc_vol:
                     st.pyplot(fig_btc_vol)
                 
-                # Bitcoin 52-week stats
                 btc_data = yf.download("BTC-USD", period="1y", progress=False)
                 if btc_data is not None and not btc_data.empty:
                     btc_close = btc_data['Close'].squeeze()
@@ -836,7 +809,6 @@ with main_tab3:
                 if fig_eth_vol:
                     st.pyplot(fig_eth_vol)
                 
-                # Ethereum 52-week stats
                 eth_data = yf.download("ETH-USD", period="1y", progress=False)
                 if eth_data is not None and not eth_data.empty:
                     eth_close = eth_data['Close'].squeeze()
