@@ -572,61 +572,57 @@ def plot_parkinson_estimator_st():
 
 
 # --- Streamlit App Layout ---
+# --- Streamlit App Layout with Tabs ---
 st.set_page_config(layout="wide", page_title="Financial Market Tools")
-
 st.title("Financial Market Insights Dashboard")
 
-# Sidebar for navigation
-st.sidebar.title("Navigation")
-options = [
-    "IVR & IVP",
-    "Expected Move",
-    "Index Divergence (Correlation)",
-    "Volatility Cone",
-    "Fyers Smart OI Profile",
-    "Volatility Risk Premium (VRP)",
-    "Hurst Exponent (Market Regime)",
-    "Liquidity Detector",
+# Define your tabs
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+    "IVR & IVP", 
+    "Expected Move", 
+    "Index Divergence", 
+    "Volatility Cone", 
+    "Fyers OI Profile", 
+    "VRP", 
+    "Hurst Exponent", 
+    "Liquidity Detector", 
     "Parkinson Estimator"
-]
+])
 
-selected_option = st.sidebar.radio("Choose a tool:", options)
-
-if selected_option == "IVR & IVP":
+with tab1:
     st.header("1. NIFTY Implied Volatility (IVR & IVP)")
     plot_nifty_volatility_st()
 
-elif selected_option == "Expected Move":
+with tab2:
     st.header("2. NIFTY 50 Implied Daily Expected Move")
     plot_expected_move_st()
 
-elif selected_option == "Index Divergence (Correlation)":
+with tab3:
     st.header("3. Inter-Index Correlation & Divergence")
     plot_index_divergence_st()
 
-elif selected_option == "Volatility Cone":
+with tab4:
     st.header("4. Volatility Cone for Nifty 50")
     plot_volatility_cone_st()
 
-elif selected_option == "Fyers Smart OI Profile":
+with tab5:
     st.header("5. Fyers Smart OI/Volume Profile")
-    # For Streamlit deployment, ensure access_token and CLIENT_ID are set securely
-    # Example using a placeholder token (replace with actual logic)
+    # Fyers API authentication logic
     fyers_access_token = generate_fyers_token_streamlit()
     plot_fyers_oi_profile_st(fyers_access_token, CLIENT_ID)
 
-elif selected_option == "Volatility Risk Premium (VRP)":
+with tab6:
     st.header("6. NIFTY 50 Volatility Risk Premium (VRP)")
     plot_vrp_st()
 
-elif selected_option == "Hurst Exponent (Market Regime)":
+with tab7:
     st.header("7. NIFTY 50 Market Regime (Hurst Exponent)")
     plot_hurst_regime_st()
 
-elif selected_option == "Liquidity Detector":
+with tab8:
     st.header("8. NIFTY 50 Intraday Liquidity Sweep & Order Block Detector")
     plot_liquidity_sweep_st()
 
-elif selected_option == "Parkinson Estimator":
+with tab9:
     st.header("9. Parkinson Estimator")
     plot_parkinson_estimator_st()
