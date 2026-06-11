@@ -1,118 +1,199 @@
-# nifty_tools.py
-"""
-Plotting utilities for Nifty Live Tools.
-Each function returns a BytesIO PNG buffer (ready for Streamlit display/download).
-Uses yfinance for market data.
-"""
+# streamlit_app.py
+# Robust Streamlit launcher for Nifty Live Tools
+import streamlit as st
+import traceback
 from io import BytesIO
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import yfinance as yf
+import base64
+import time
 
-plt.style.use("dark_background")
+st.set_page_config(page_title="Nifty Live Tools (Debuggable)", layout="wide")
 
+st.title("Nifty Live Tools — Debuggable Launcher")
 
-def _fig_to_bytes(fig, dpi=120):
-    buf = BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", dpi=dpi)
-    plt.close(fig)
-    buf.seek(0)
-    return buf
+# Safe imports: show errors in UI instead of blank screen
+IMPORT_ERROR = None
+try:
+    import nifty_tools as nt
+    from fyers_client import fetch_oi_profile
+    from scheduler import RepeatingTimer
+except Exception as e:
+    IMPORT_ERROR = traceback.format_exc()
 
+if IMPORT_ERROR:
+    st.error("Import error — app cannot continue. See details below.")
+    with st.expander("Import traceback"):
+        st.text(IMPORT_ERROR)
+    st.stop()
 
-def fetch_yf(ticker, **kwargs):
-    """Wrapper to fetch data and raise a clear error if empty."""
-    df = yf.download(ticker, **kwargs)
-    if df is None or df.empty:
-        raise RuntimeError(f"No data returned for {ticker}")
-    return df
+# Session cache helpers
+if "cache" not in st.session_state:
+    st.session_state.cache = {}
+if "scheduler" not in st.session_state:
+    st.session_state.scheduler = None
 
+def cache_set(key, val):
+    st.session_state.cache[key] = val
 
-def plot_nifty_volatility_buf():
-    data = fetch_yf("^INDIAVIX", period="1y", progress=False)
-    close = data["Close"].squeeze()
-    current_iv = float(close.iloc[-1])
-    high_52w = float(close.max())
-    low_52w = float(close.min())
+def cache_get(key):
+    return st.session_state.cache.get(key)
 
-    ivr = ((current_iv - low_52w) / (high_52w - low_52w)) * 100 if high_52w != low_52w else 0.0
-    days_below = (close < current_iv).sum()
-    total_days = len(close)
-    ivp = (days_below / total_days) * 100 if total_days > 0 else 0.0
+def cache_clear():
+    st.session_state.cache = {}
 
-    regime = "HIGH VOLATILITY: Net Short Premium" if ivr > 50 else "LOW VOLATILITY: Net Long Premium"
-    color_theme = "#00FF00" if ivr > 50 else "#FF3333"
+# Sidebar controls
+with st.sidebar:
+    st.header("Controls")
+    tools = st.multiselect("Select tools to show", [
+        "IVR & IVP", "Expected Move", "Correlation", "Volatility Cone",
+        "VRP", "Hurst", "Liquidity Sweep", "Parkinson", "FYERS OI Profile"
+    ], default=["IVR & IVP", "Expected Move"])
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(close.index, close.values, color="#00FFFF", linewidth=1.5, label="India VIX (1Y)")
-    ax.axhline(high_52w, color="red", linestyle="--", alpha=0.6, label=f"52W High: {high_52w:.2f}")
-    ax.axhline(low_52w, color="green", linestyle="--", alpha=0.6, label=f"52W Low: {low_52w:.2f}")
-    ax.axhline(current_iv, color="white", linestyle="-", linewidth=1.5, label=f"Current: {current_iv:.2f}")
-    ax.fill_between(close.index, low_52w, current_iv, color="white", alpha=0.03)
-    ax.set_title("NIFTY Implied Volatility (IVR & IVP)", fontsize=14)
-    ax.set_ylabel("VIX Level")
-    ax.grid(True, linestyle=":")
-    ax.legend(loc="upper right", facecolor="black", edgecolor="gray", fontsize=9)
+    st.markdown("---")
+    st.subheader("FYERS credentials")
+    st.info("Prefer Streamlit Secrets for production.")
+    fyers_token_input = st.text_input("FYERS Access Token (optional)", type="password")
+    fyers_client_id_input = st.text_input("FYERS Client ID (optional)")
+    use_secrets = False
+    if "FYERS_ACCESS_TOKEN" in st.secrets or "FYERS_CLIENT_ID" in st.secrets:
+        use_secrets = st.checkbox("Use Streamlit Secrets for FYERS", value=True)
 
-    props = dict(boxstyle="round,pad=0.4", facecolor="black", alpha=0.85, edgecolor=color_theme, linewidth=1.2)
-    text_str = (
-        f"IV Rank (IVR): {ivr:.1f}%\n"
-        f"IV Percentile (IVP): {ivp:.1f}%\n"
-        f"Current VIX: {current_iv:.2f}\n"
-        f"Edge: {regime}"
-    )
-    ax.text(0.02, 0.95, text_str, transform=ax.transAxes, fontsize=10, verticalalignment="top", bbox=props, color="white")
+    st.markdown("---")
+    st.subheader("Cache & Scheduler")
+    precompute_interval = st.number_input("Precompute interval (minutes)", min_value=1, max_value=1440, value=10, step=1)
+    start_scheduler = st.button("Start background precompute")
+    stop_scheduler = st.button("Stop background precompute")
+    clear_cache = st.button("Clear cache now")
 
-    return _fig_to_bytes(fig)
+if clear_cache:
+    cache_clear()
+    st.success("Cache cleared")
 
+# Background precompute function (safe, swallows exceptions)
+def precompute_all():
+    try:
+        # heavy plots
+        try:
+            buf = nt.plot_volatility_cone_buf()
+            cache_set("volatility_cone", buf.getvalue())
+        except Exception:
+            pass
+        try:
+            buf = nt.plot_vrp_buf()
+            cache_set("vrp", buf.getvalue())
+        except Exception:
+            pass
+        try:
+            buf = nt.plot_hurst_buf()
+            cache_set("hurst", buf.getvalue())
+        except Exception:
+            pass
+    except Exception:
+        pass
 
-def plot_expected_move_buf():
-    nifty = fetch_yf("^NSEI", period="1mo", progress=False)
-    vix = fetch_yf("^INDIAVIX", period="5d", progress=False)
+# Scheduler control
+if start_scheduler:
+    if st.session_state.scheduler is None:
+        rt = RepeatingTimer(int(precompute_interval) * 60, precompute_all)
+        rt.start()
+        st.session_state.scheduler = rt
+        st.success(f"Scheduler started every {precompute_interval} minutes")
+    else:
+        st.info("Scheduler already running")
 
-    nifty_close = nifty["Close"].squeeze()
-    spot = float(nifty_close.iloc[-1])
-    current_vix = float(vix["Close"].squeeze().iloc[-1])
+if stop_scheduler:
+    if st.session_state.scheduler:
+        st.session_state.scheduler.stop()
+        st.session_state.scheduler = None
+        st.success("Scheduler stopped")
+    else:
+        st.info("No scheduler running")
 
-    # Use trading-day annualization consistently (sqrt(252)) for realized vol; for daily expected move we keep original approach
-    daily_volatility = (current_vix / 100) * np.sqrt(1 / 365)
-    expected_move = spot * daily_volatility
-    upper = spot + expected_move
-    lower = spot - expected_move
+# Helper to render buffer (from function or cache)
+def render_from_func_or_cache(key, func, cache_ttl_seconds=300):
+    cached = cache_get(key)
+    if cached:
+        buf = BytesIO(cached)
+        st.image(buf)
+        if st.button(f"Download {key} PNG"):
+            b64 = base64.b64encode(cached).decode()
+            href = f'<a href="data:file/png;base64,{b64}" download="{key}.png">Download {key}.png</a>'
+            st.markdown(href, unsafe_allow_html=True)
+        st.success(f"Displayed {key} from cache")
+        return
 
-    recent = nifty_close.tail(15)
-    x = np.arange(len(recent))
-    tomorrow_x = len(recent)
+    try:
+        buf = func()
+        cache_set(key, buf.getvalue())
+        st.image(buf)
+        if st.button(f"Download {key} PNG"):
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            href = f'<a href="data:file/png;base64,{b64}" download="{key}.png">Download {key}.png</a>'
+            st.markdown(href, unsafe_allow_html=True)
+        st.success(f"Rendered {key} at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    except Exception as e:
+        st.error(f"Failed to render {key}: {e}")
+        with st.expander("Traceback"):
+            st.text(traceback.format_exc())
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(x, recent.values, color="#00FFFF", linewidth=2, marker="o", label="Nifty 50 Close")
-    ax.hlines(spot, xmin=x[-1], xmax=tomorrow_x, color="white", linestyle="-", linewidth=1.5)
-    ax.scatter(tomorrow_x, spot, color="white", s=50, zorder=5)
-    ax.scatter(tomorrow_x, upper, color="#00FF00", s=80, marker="^", zorder=5)
-    ax.scatter(tomorrow_x, lower, color="#FF3333", s=80, marker="v", zorder=5)
-    ax.hlines(upper, xmin=x[-1], xmax=tomorrow_x, color="#00FF00", linestyle="--", linewidth=1)
-    ax.hlines(lower, xmin=x[-1], xmax=tomorrow_x, color="#FF3333", linestyle="--", linewidth=1)
-    ax.fill_between([x[-1], tomorrow_x], [spot, lower], [spot, upper], color="gray", alpha=0.18)
+# Render selected tools
+if not tools:
+    st.warning("No tools selected. Use the sidebar to enable tools.")
+else:
+    tabs = st.tabs(tools)
+    for i, tool in enumerate(tools):
+        with tabs[i]:
+            st.header(tool)
+            if tool == "IVR & IVP":
+                render_from_func_or_cache("ivr_ivp", nt.plot_nifty_volatility_buf)
+            elif tool == "Expected Move":
+                render_from_func_or_cache("expected_move", nt.plot_expected_move_buf)
+            elif tool == "Correlation":
+                render_from_func_or_cache("correlation", nt.plot_index_divergence_buf)
+            elif tool == "Volatility Cone":
+                render_from_func_or_cache("volatility_cone", nt.plot_volatility_cone_buf)
+            elif tool == "VRP":
+                render_from_func_or_cache("vrp", nt.plot_vrp_buf)
+            elif tool == "Hurst":
+                render_from_func_or_cache("hurst", nt.plot_hurst_buf)
+            elif tool == "Liquidity Sweep":
+                render_from_func_or_cache("liquidity", nt.plot_liquidity_sweep_buf)
+            elif tool == "Parkinson":
+                render_from_func_or_cache("parkinson", nt.plot_parkinson_buf)
+            elif tool == "FYERS OI Profile":
+                st.subheader("FYERS OI / Volume Profile")
+                underlying = st.selectbox("Underlying", ["NIFTY", "BANKNIFTY"], index=0)
+                expiry = st.text_input("Expiry (e.g., 26JUN)", value="26JUN")
+                spot = st.number_input("Spot price (approx)", value=23300.0, step=50.0)
+                strike_step = st.selectbox("Strike step", [25, 50, 100, 200], index=1)
+                fetch_btn = st.button("Fetch FYERS OI Profile")
+                if fetch_btn:
+                    if use_secrets:
+                        access_token = st.secrets.get("FYERS_ACCESS_TOKEN", "")
+                        client_id = st.secrets.get("FYERS_CLIENT_ID", "")
+                    else:
+                        access_token = fyers_token_input
+                        client_id = fyers_client_id_input
+                    if not access_token or not client_id:
+                        st.error("FYERS credentials missing. Set them in Secrets or enter in sidebar.")
+                    else:
+                        try:
+                            df, metric = fetch_oi_profile(access_token, client_id, underlying=underlying, expiry_str=expiry, spot_price=spot, strike_step=strike_step)
+                            st.write(f"Metric used: **{metric}**")
+                            st.dataframe(df)
+                            import matplotlib.pyplot as plt
+                            fig, ax = plt.subplots(figsize=(8, 6))
+                            ax.barh(df.index, df["Call_Data"], color="#FF3333", alpha=0.8, label=f"Call {metric}")
+                            ax.barh(df.index, -df["Put_Data"], color="#00FF00", alpha=0.8, label=f"Put {metric}")
+                            ax.axvline(0, color="white", linewidth=1)
+                            ax.set_title(f"{underlying} {metric} Profile (Expiry: {expiry})")
+                            ax.legend(facecolor="black")
+                            st.pyplot(fig)
+                        except Exception as e:
+                            st.error(f"FYERS fetch failed: {e}")
+                            with st.expander("Traceback"):
+                                st.text(traceback.format_exc())
+            else:
+                st.info("Tool not implemented in this build.")
 
-    ax.set_title("NIFTY 50 Implied Daily Expected Move", fontsize=14)
-    ax.set_ylabel("Nifty 50 Price")
-    ax.grid(True, linestyle=":")
-    ax.legend(loc="upper left", facecolor="black")
-
-    props = dict(boxstyle="round,pad=0.4", facecolor="black", alpha=0.85, edgecolor="white", linewidth=1.2)
-    text_str = (
-        f"Current VIX: {current_vix:.2f}\n"
-        f"Spot Price: {spot:.2f}\n"
-        f"Expected Move: ± {expected_move:.1f} points\n"
-        f"Upper: {upper:.2f}\nLower: {lower:.2f}"
-    )
-    ax.text(0.02, 0.45, text_str, transform=ax.transAxes, fontsize=10, verticalalignment="center", bbox=props, color="white")
-
-    return _fig_to_bytes(fig)
-
-
-# Additional plotting functions (volatility cone, VRP, Hurst, liquidity, Parkinson)
-# Implemented similarly and returning BytesIO. For brevity they are omitted here but included in the repo.
-# (In the repo these functions are present: plot_index_divergence_buf, plot_volatility_cone_buf,
-#  plot_vrp_buf, plot_hurst_buf, plot_liquidity_sweep_buf, plot_parkinson_buf)
+st.markdown("---")
+st.caption("If the screen is still blank after these changes, check the terminal logs and paste the traceback here and I will debug it line-by-line.")
