@@ -593,36 +593,35 @@ with tab1:
     st.header("1. NIFTY Implied Volatility (IVR & IVP)")
     plot_nifty_volatility_st()
 
-with tab2:
+
     st.header("2. NIFTY 50 Implied Daily Expected Move")
     plot_expected_move_st()
 
-with tab3:
+
     st.header("3. Inter-Index Correlation & Divergence")
     plot_index_divergence_st()
 
-with tab4:
+
     st.header("4. Volatility Cone for Nifty 50")
     plot_volatility_cone_st()
 
-with tab5:
+
     st.header("5. Fyers Smart OI/Volume Profile")
     # Fyers API authentication logic
     fyers_access_token = generate_fyers_token_streamlit()
     plot_fyers_oi_profile_st(fyers_access_token, CLIENT_ID)
 
-with tab6:
+
     st.header("6. NIFTY 50 Volatility Risk Premium (VRP)")
     plot_vrp_st()
 
-with tab7:
     st.header("7. NIFTY 50 Market Regime (Hurst Exponent)")
     plot_hurst_regime_st()
 
-with tab8:
+
     st.header("8. NIFTY 50 Intraday Liquidity Sweep & Order Block Detector")
     plot_liquidity_sweep_st()
 
-with tab9:
+
     st.header("9. Parkinson Estimator")
     plot_parkinson_estimator_st()
