@@ -1,6 +1,7 @@
 streamlit
 scikit-learn
 yfinance
+fyers-apiv3
 pandas
 numpy
 matplotlib
@@ -12,3 +13,7 @@ xgboost
 python-telegram-bot
 pyyaml
 seaborn
+
+
+
+
