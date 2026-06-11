@@ -12,7 +12,7 @@ plt.style.use('dark_background')
 
 # --- Fyers API Configuration (Use Streamlit Secrets for production) ---
 # For local testing, you can use the values from your Colab notebook
-# In a deployed Streamlit app, you would use: 
+# In a deployed Streamlit app, you would use:
 # CLIENT_ID = st.secrets["FYERS_CLIENT_ID"]
 # SECRET_KEY = st.secrets["FYERS_SECRET_KEY"]
 # REDIRECT_URI = st.secrets["FYERS_REDIRECT_URI"]
@@ -66,7 +66,7 @@ def plot_nifty_volatility_st():
     st.write(f"**IV Percentile (IVP):** {ivp:.1f}%")
     st.markdown(f"**Regime:** <span style='color:{color_theme}'>**{regime}**</span>", unsafe_allow_html=True)
 
-    fig, ax = plt.subplots(figsize=(12, 7), dpi=120)
+    fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
     ax.plot(close_prices.index, close_prices.values, color='#00FFFF', linewidth=1.5, label='India VIX (1Y)')
     ax.axhline(high_52w, color='red', linestyle='--', alpha=0.5, label=f'52W High: {high_52w:.2f}')
     ax.axhline(low_52w, color='green', linestyle='--', alpha=0.5, label=f'52W Low: {low_52w:.2f}')
@@ -76,7 +76,7 @@ def plot_nifty_volatility_st():
     ax.set_ylabel('VIX Level', color='gray', fontsize=12)
     ax.grid(True, color='#2A2A2A', linestyle=':')
     ax.legend(loc='upper right', facecolor='black', edgecolor='gray', fontsize=10)
-    
+
     st.pyplot(fig)
     plt.close(fig)
 
@@ -107,7 +107,7 @@ def plot_expected_move_st():
     st.write(f"**Upper Target (+1 SD):** {upper_bound:.2f}")
     st.write(f"**Lower Target (-1 SD):** {lower_bound:.2f}")
 
-    fig, ax = plt.subplots(figsize=(12, 7), dpi=120)
+    fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
 
     recent_nifty = nifty_close.tail(15)
     x_dates = np.arange(len(recent_nifty))
@@ -178,7 +178,7 @@ def plot_index_divergence_st():
     st.write(f"**20-Day Correlation:** {current_corr:.2f}")
     st.markdown(f"**Stat Property:** <span style='color:{color_theme}'>**{stat_property}**</span>", unsafe_allow_html=True)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), dpi=120, gridspec_kw={'height_ratios': [1.5, 1]})
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), dpi=120, gridspec_kw={'height_ratios': [1.5, 1]})
 
     ax1.plot(normalized_prices.index, normalized_prices['Nifty 50'], color='#00FFFF', linewidth=2, label='Nifty 50 (Normalized)')
     ax1.plot(normalized_prices.index, normalized_prices['Bank Nifty'], color='#FFA500', linewidth=2, label='Bank Nifty (Normalized)')
@@ -198,7 +198,7 @@ def plot_index_divergence_st():
     ax2.set_ylim(-0.2, 1.1)
     ax2.grid(True, color='#2A2A2A', linestyle=':')
     ax2.legend(loc='lower left', facecolor='black', edgecolor='gray')
-    
+
     st.pyplot(fig)
     plt.close(fig)
 
@@ -227,7 +227,7 @@ def plot_volatility_cone_st():
         median_vol.append(rolling_vol.median() * 100)
         current_vol.append(rolling_vol.iloc[-1] * 100)
 
-    fig, ax = plt.subplots(figsize=(12, 7))
+    fig, ax = plt.subplots(figsize=(8, 5))
 
     ax.plot(windows, max_vol, marker='o', color='red', linewidth=2, label='Maximum Volatility')
     ax.plot(windows, min_vol, marker='o', color='limegreen', linewidth=2, label='Minimum Volatility')
@@ -242,7 +242,7 @@ def plot_volatility_cone_st():
     ax.set_xticks(windows)
     ax.grid(color='gray', linestyle=':', alpha=0.5)
     ax.legend(loc='upper right', fontsize=12)
-    
+
     st.pyplot(fig)
     plt.close(fig)
 
@@ -311,7 +311,7 @@ def plot_fyers_oi_profile_st(access_token_st, client_id_st):
 
             st.write(f"-> Success! Generating {metric_used} Profile...")
 
-            fig, ax = plt.subplots(figsize=(12, 8), dpi=100)
+            fig, ax = plt.subplots(figsize=(8, 6), dpi=100)
             ax.barh(df_oi.index, df_oi['Call_Data'], height=strike_step*0.6, color='#FF3333', alpha=0.8, label=f'Call {metric_used} (Resistance)')
             ax.barh(df_oi.index, -df_oi['Put_Data'], height=strike_step*0.6, color='#00FF00', alpha=0.8, label=f'Put {metric_used} (Support)')
 
@@ -374,7 +374,7 @@ def plot_vrp_st():
     st.write(f"**VRP Spread:** {current_vrp:+.2f}%")
     st.markdown(f"**Regime:** <span style='color:{color_theme}'>**{regime}**</span><br>**Stat Property:** {stat_property}", unsafe_allow_html=True)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), dpi=120, gridspec_kw={'height_ratios': [2, 1]})
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), dpi=120, gridspec_kw={'height_ratios': [2, 1]})
 
     ax1.plot(df.index, df['VIX'], color='#00FFFF', linewidth=2, label='Implied Volatility (India VIX)')
     ax1.plot(df.index, df['HV'], color='#FFA500', linewidth=2, label='Realized Volatility (20-Day HV)')
@@ -390,7 +390,7 @@ def plot_vrp_st():
     ax2.axhline(0, color='white', linewidth=1)
     ax2.set_ylabel('VRP Spread (%)', color='gray')
     ax2.grid(True, color='#2A2A2A', linestyle=':')
-    
+
     st.pyplot(fig)
     plt.close(fig)
 
@@ -442,7 +442,7 @@ def plot_hurst_regime_st():
     st.write(f"**Hurst Exponent (H):** {current_hurst:.3f}")
     st.markdown(f"**Regime:** <span style='color:{color_theme}'>**{regime}**</span><br>**Stat Property:** {stat_property}", unsafe_allow_html=True)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), dpi=120, gridspec_kw={'height_ratios': [1.5, 1]})
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), dpi=120, gridspec_kw={'height_ratios': [1.5, 1]})
 
     ax1.plot(df.index, df['Close'], color='white', linewidth=1.5, label='Nifty 50 Close')
     ax1.set_title('NIFTY 50 Market Regime (Hurst Exponent)', fontsize=18, color='white', pad=15, fontweight='bold')
@@ -464,7 +464,7 @@ def plot_hurst_regime_st():
     ax2.grid(True, color='#2A2A2A', linestyle=':')
     ax2.set_ylim(0.3, 0.7)
     ax2.legend(loc='upper right', facecolor='black', edgecolor='gray')
-    
+
     st.pyplot(fig)
     plt.close(fig)
 
@@ -511,7 +511,7 @@ def plot_liquidity_sweep_st():
     st.write(f"**Live Spot Price:** {current_price:.2f}")
     st.markdown(f"**Microstructure:** <span style='color:{color_theme}'>**{regime}**</span><br>**Stat Property:** {stat_property}", unsafe_allow_html=True)
 
-    fig, ax = plt.subplots(figsize=(12, 7), dpi=120)
+    fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
 
     plot_data = data.tail(60).copy()
     plot_data['Index'] = np.arange(len(plot_data))
@@ -537,7 +537,7 @@ def plot_liquidity_sweep_st():
     ax.set_ylabel('Nifty 50 Price', color='gray')
     ax.grid(True, color='#2A2A2A', linestyle=':')
     ax.set_xticks([])
-    
+
     st.pyplot(fig)
     plt.close(fig)
 
@@ -571,6 +571,40 @@ def plot_parkinson_estimator_st():
     st.write(f"**Close-to-Close Volatility (Standard Risk):** {float(c2c_vol) * 100:.2f}%")
 
 
+# --- Streamlit App Layout (Single Page) ---
+st.set_page_config(layout="wide", page_title="Financial Market Tools")
+st.title("Financial Market Insights Dashboard")
+
+# Call each tool function sequentially
+
+st.header("1. NIFTY Implied Volatility (IVR & IVP)")
+plot_nifty_volatility_st()
+
+st.header("2. NIFTY 50 Implied Daily Expected Move")
+plot_expected_move_st()
+
+st.header("3. Inter-Index Correlation & Divergence")
+plot_index_divergence_st()
+
+st.header("4. Volatility Cone for Nifty 50")
+plot_volatility_cone_st()
+
+st.header("5. Fyers Smart OI/Volume Profile")
+# Fyers API authentication logic
+fyers_access_token = generate_fyers_token_streamlit()
+plot_fyers_oi_profile_st(fyers_access_token, CLIENT_ID)
+
+st.header("6. NIFTY 50 Volatility Risk Premium (VRP)")
+plot_vrp_st()
+
+st.header("7. NIFTY 50 Market Regime (Hurst Exponent)")
+plot_hurst_regime_st()
+
+st.header("8. NIFTY 50 Intraday Liquidity Sweep & Order Block Detector")
+plot_liquidity_sweep_st()
+
+st.header("9. Parkinson Estimator")
+plot_parkinson_estimator_st()
 
 # --- Streamlit App Layout (Single Page) ---
 st.set_page_config(layout="wide", page_title="Financial Market Tools")
