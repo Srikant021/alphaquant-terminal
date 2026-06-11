@@ -571,57 +571,38 @@ def plot_parkinson_estimator_st():
     st.write(f"**Close-to-Close Volatility (Standard Risk):** {float(c2c_vol) * 100:.2f}%")
 
 
-# --- Streamlit App Layout ---
-# --- Streamlit App Layout with Tabs ---
+
+# --- Streamlit App Layout (Single Page) ---
 st.set_page_config(layout="wide", page_title="Financial Market Tools")
 st.title("Financial Market Insights Dashboard")
 
-# Define your tabs
-tab1 = st.tabs([
-    "IVR & IVP", 
-    "Expected Move", 
-    "Index Divergence", 
-    "Volatility Cone", 
-    "Fyers OI Profile", 
-    "VRP", 
-    "Hurst Exponent", 
-    "Liquidity Detector", 
-    "Parkinson Estimator"
-])
+# Call each tool function sequentially
 
-with tab1:
-    st.header("1. NIFTY Implied Volatility (IVR & IVP)")
-    plot_nifty_volatility_st()
+st.header("1. NIFTY Implied Volatility (IVR & IVP)")
+plot_nifty_volatility_st()
 
+st.header("2. NIFTY 50 Implied Daily Expected Move")
+plot_expected_move_st()
 
-    st.header("2. NIFTY 50 Implied Daily Expected Move")
-    plot_expected_move_st()
+st.header("3. Inter-Index Correlation & Divergence")
+plot_index_divergence_st()
 
+st.header("4. Volatility Cone for Nifty 50")
+plot_volatility_cone_st()
 
-    st.header("3. Inter-Index Correlation & Divergence")
-    plot_index_divergence_st()
+st.header("5. Fyers Smart OI/Volume Profile")
+# Fyers API authentication logic
+fyers_access_token = generate_fyers_token_streamlit()
+plot_fyers_oi_profile_st(fyers_access_token, CLIENT_ID)
 
+st.header("6. NIFTY 50 Volatility Risk Premium (VRP)")
+plot_vrp_st()
 
-    st.header("4. Volatility Cone for Nifty 50")
-    plot_volatility_cone_st()
+st.header("7. NIFTY 50 Market Regime (Hurst Exponent)")
+plot_hurst_regime_st()
 
+st.header("8. NIFTY 50 Intraday Liquidity Sweep & Order Block Detector")
+plot_liquidity_sweep_st()
 
-    st.header("5. Fyers Smart OI/Volume Profile")
-    # Fyers API authentication logic
-    fyers_access_token = generate_fyers_token_streamlit()
-    plot_fyers_oi_profile_st(fyers_access_token, CLIENT_ID)
-
-
-    st.header("6. NIFTY 50 Volatility Risk Premium (VRP)")
-    plot_vrp_st()
-
-    st.header("7. NIFTY 50 Market Regime (Hurst Exponent)")
-    plot_hurst_regime_st()
-
-
-    st.header("8. NIFTY 50 Intraday Liquidity Sweep & Order Block Detector")
-    plot_liquidity_sweep_st()
-
-
-    st.header("9. Parkinson Estimator")
-    plot_parkinson_estimator_st()
+st.header("9. Parkinson Estimator")
+plot_parkinson_estimator_st()
