@@ -577,7 +577,7 @@ st.set_page_config(layout="wide", page_title="Financial Market Tools")
 st.title("Financial Market Insights Dashboard")
 
 # Define your tabs
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+tab1 = st.tabs([
     "IVR & IVP", 
     "Expected Move", 
     "Index Divergence", 
