@@ -1,21 +1,18 @@
 # streamlit_app.py
-# Robust Streamlit launcher for Nifty Live Tools
 import streamlit as st
 import traceback
 from io import BytesIO
-import base64
 import time
 
 st.set_page_config(page_title="Nifty Live Tools (Debuggable)", layout="wide")
-
 st.title("Nifty Live Tools — Debuggable Launcher")
 
-# Safe imports: show errors in UI instead of blank screen
+# Safe imports
 IMPORT_ERROR = None
 try:
     import nifty_tools as nt
     from fyers_client import fetch_oi_profile
-    from scheduler import RepeatingTimer
+    # We no longer need the RepeatingTimer scheduler!
 except Exception as e:
     IMPORT_ERROR = traceback.format_exc()
 
@@ -24,21 +21,6 @@ if IMPORT_ERROR:
     with st.expander("Import traceback"):
         st.text(IMPORT_ERROR)
     st.stop()
-
-# Session cache helpers
-if "cache" not in st.session_state:
-    st.session_state.cache = {}
-if "scheduler" not in st.session_state:
-    st.session_state.scheduler = None
-
-def cache_set(key, val):
-    st.session_state.cache[key] = val
-
-def cache_get(key):
-    return st.session_state.cache.get(key)
-
-def cache_clear():
-    st.session_state.cache = {}
 
 # Sidebar controls
 with st.sidebar:
@@ -58,78 +40,53 @@ with st.sidebar:
         use_secrets = st.checkbox("Use Streamlit Secrets for FYERS", value=True)
 
     st.markdown("---")
-    st.subheader("Cache & Scheduler")
-    precompute_interval = st.number_input("Precompute interval (minutes)", min_value=1, max_value=1440, value=10, step=1)
-    start_scheduler = st.button("Start background precompute")
-    stop_scheduler = st.button("Stop background precompute")
-    clear_cache = st.button("Clear cache now")
+    st.subheader("Cache Settings")
+    # We use this value to control the TTL of our cache
+    cache_ttl = st.number_input("Cache TTL (minutes)", min_value=1, max_value=1440, value=10, step=1)
+    
+    if st.button("Clear Cache Now"):
+        st.cache_data.clear()
+        st.success("Cache cleared!")
 
-if clear_cache:
-    cache_clear()
-    st.success("Cache cleared")
+# --- NATIVE STREAMLIT CACHING ---
+# This decorator automatically caches the output. If the function is called again 
+# within the TTL window (e.g., 10 mins), it instantly returns the cached BytesIO buffer.
+@st.cache_data(ttl=cache_ttl * 60, show_spinner=False)
+def get_plot_buffer(func_name):
+    # Map the string name to the actual function to allow Streamlit to hash the arguments cleanly
+    func_map = {
+        "ivr_ivp": nt.plot_nifty_volatility_buf,
+        "expected_move": nt.plot_expected_move_buf,
+        "correlation": nt.plot_index_divergence_buf,
+        "volatility_cone": nt.plot_volatility_cone_buf,
+        "vrp": nt.plot_vrp_buf,
+        "hurst": nt.plot_hurst_buf,
+        "liquidity": nt.plot_liquidity_sweep_buf,
+        "parkinson": nt.plot_parkinson_buf,
+    }
+    
+    func = func_map.get(func_name)
+    if func:
+        return func().getvalue() # Return bytes so it's easily cacheable
+    return None
 
-# Background precompute function (safe, swallows exceptions)
-def precompute_all():
+def render_tool(key):
     try:
-        # heavy plots
-        try:
-            buf = nt.plot_volatility_cone_buf()
-            cache_set("volatility_cone", buf.getvalue())
-        except Exception:
-            pass
-        try:
-            buf = nt.plot_vrp_buf()
-            cache_set("vrp", buf.getvalue())
-        except Exception:
-            pass
-        try:
-            buf = nt.plot_hurst_buf()
-            cache_set("hurst", buf.getvalue())
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-# Scheduler control
-if start_scheduler:
-    if st.session_state.scheduler is None:
-        rt = RepeatingTimer(int(precompute_interval) * 60, precompute_all)
-        rt.start()
-        st.session_state.scheduler = rt
-        st.success(f"Scheduler started every {precompute_interval} minutes")
-    else:
-        st.info("Scheduler already running")
-
-if stop_scheduler:
-    if st.session_state.scheduler:
-        st.session_state.scheduler.stop()
-        st.session_state.scheduler = None
-        st.success("Scheduler stopped")
-    else:
-        st.info("No scheduler running")
-
-# Helper to render buffer (from function or cache)
-def render_from_func_or_cache(key, func, cache_ttl_seconds=300):
-    cached = cache_get(key)
-    if cached:
-        buf = BytesIO(cached)
-        st.image(buf)
-        if st.button(f"Download {key} PNG"):
-            b64 = base64.b64encode(cached).decode()
-            href = f'<a href="data:file/png;base64,{b64}" download="{key}.png">Download {key}.png</a>'
-            st.markdown(href, unsafe_allow_html=True)
-        st.success(f"Displayed {key} from cache")
-        return
-
-    try:
-        buf = func()
-        cache_set(key, buf.getvalue())
-        st.image(buf)
-        if st.button(f"Download {key} PNG"):
-            b64 = base64.b64encode(buf.getvalue()).decode()
-            href = f'<a href="data:file/png;base64,{b64}" download="{key}.png">Download {key}.png</a>'
-            st.markdown(href, unsafe_allow_html=True)
-        st.success(f"Rendered {key} at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        with st.spinner(f"Computing {key}..."):
+            # This will fetch from cache if within TTL, or compute if expired/new
+            image_bytes = get_plot_buffer(key)
+        
+        if image_bytes:
+            st.image(image_bytes)
+            
+            # Native Streamlit Download Button
+            st.download_button(
+                label=f"Download {key} PNG",
+                data=image_bytes,
+                file_name=f"{key}.png",
+                mime="image/png"
+            )
+            st.caption(f"Last updated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     except Exception as e:
         st.error(f"Failed to render {key}: {e}")
         with st.expander("Traceback"):
@@ -143,36 +100,33 @@ else:
     for i, tool in enumerate(tools):
         with tabs[i]:
             st.header(tool)
-            if tool == "IVR & IVP":
-                render_from_func_or_cache("ivr_ivp", nt.plot_nifty_volatility_buf)
-            elif tool == "Expected Move":
-                render_from_func_or_cache("expected_move", nt.plot_expected_move_buf)
-            elif tool == "Correlation":
-                render_from_func_or_cache("correlation", nt.plot_index_divergence_buf)
-            elif tool == "Volatility Cone":
-                render_from_func_or_cache("volatility_cone", nt.plot_volatility_cone_buf)
-            elif tool == "VRP":
-                render_from_func_or_cache("vrp", nt.plot_vrp_buf)
-            elif tool == "Hurst":
-                render_from_func_or_cache("hurst", nt.plot_hurst_buf)
-            elif tool == "Liquidity Sweep":
-                render_from_func_or_cache("liquidity", nt.plot_liquidity_sweep_buf)
-            elif tool == "Parkinson":
-                render_from_func_or_cache("parkinson", nt.plot_parkinson_buf)
+            
+            # Map UI selection to the internal keys
+            tool_mapping = {
+                "IVR & IVP": "ivr_ivp",
+                "Expected Move": "expected_move",
+                "Correlation": "correlation",
+                "Volatility Cone": "volatility_cone",
+                "VRP": "vrp",
+                "Hurst": "hurst",
+                "Liquidity Sweep": "liquidity",
+                "Parkinson": "parkinson"
+            }
+            
+            if tool in tool_mapping:
+                render_tool(tool_mapping[tool])
+                
             elif tool == "FYERS OI Profile":
                 st.subheader("FYERS OI / Volume Profile")
                 underlying = st.selectbox("Underlying", ["NIFTY", "BANKNIFTY"], index=0)
                 expiry = st.text_input("Expiry (e.g., 26JUN)", value="26JUN")
                 spot = st.number_input("Spot price (approx)", value=23300.0, step=50.0)
                 strike_step = st.selectbox("Strike step", [25, 50, 100, 200], index=1)
-                fetch_btn = st.button("Fetch FYERS OI Profile")
-                if fetch_btn:
-                    if use_secrets:
-                        access_token = st.secrets.get("FYERS_ACCESS_TOKEN", "")
-                        client_id = st.secrets.get("FYERS_CLIENT_ID", "")
-                    else:
-                        access_token = fyers_token_input
-                        client_id = fyers_client_id_input
+                
+                if st.button("Fetch FYERS OI Profile"):
+                    access_token = st.secrets.get("FYERS_ACCESS_TOKEN", "") if use_secrets else fyers_token_input
+                    client_id = st.secrets.get("FYERS_CLIENT_ID", "") if use_secrets else fyers_client_id_input
+                    
                     if not access_token or not client_id:
                         st.error("FYERS credentials missing. Set them in Secrets or enter in sidebar.")
                     else:
@@ -180,6 +134,7 @@ else:
                             df, metric = fetch_oi_profile(access_token, client_id, underlying=underlying, expiry_str=expiry, spot_price=spot, strike_step=strike_step)
                             st.write(f"Metric used: **{metric}**")
                             st.dataframe(df)
+                            
                             import matplotlib.pyplot as plt
                             fig, ax = plt.subplots(figsize=(8, 6))
                             ax.barh(df.index, df["Call_Data"], color="#FF3333", alpha=0.8, label=f"Call {metric}")
@@ -194,6 +149,3 @@ else:
                                 st.text(traceback.format_exc())
             else:
                 st.info("Tool not implemented in this build.")
-
-st.markdown("---")
-st.caption("If the screen is still blank after these changes, check the terminal logs and paste the traceback here and I will debug it line-by-line.")
