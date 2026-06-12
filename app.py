@@ -1,589 +1,439 @@
-"""
-FINANCIAL ANALYSIS SUITE WITH ML & CRYPTO
-Professional Trading Dashboard with Quantitative Tools + ML Predictions
-"""
-
-import sys
-import numpy as np
-import pandas as pd
+import streamlit as st
 import yfinance as yf
-from datetime import datetime
-import warnings
-import json
-from pathlib import Path
-
-# PyQt5 GUI
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QTabWidget, QLabel, QPushButton, 
-                             QMessageBox, QTableWidget, QTableWidgetItem)
-from PyQt5.QtCore import QThread, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont
-
-# ML Libraries
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVR
+import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
-from matplotlib.figure import Figure
+import warnings
+
+# Use Streamlit's wide layout for cinematic charts
+st.set_page_config(page_title="Quant ML Master Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 warnings.filterwarnings('ignore')
+plt.style.use('dark_background')
 
-# ==================== ML PREDICTION ENGINE ====================
-class VolatilityMLPredictor:
-    def __init__(self):
-        self.models = {
-            'rf': RandomForestRegressor(n_estimators=100, random_state=42),
-            'gb': GradientBoostingRegressor(n_estimators=100, random_state=42),
-            'svr': SVR(kernel='rbf', C=100)
-        }
-        self.scaler = StandardScaler()
-        self.is_trained = False
-        
-    def prepare_features(self, price_data, lookback=30):
-        if len(price_data) < lookback + 5:
-            return None, None
-            
-        returns = np.log(price_data / price_data.shift(1)).dropna()
-        # Clean infinite values which break StandardScaler
-        returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
-        
-        features, targets = [], []
-        
-        for i in range(len(returns) - lookback - 5):
-            window = returns.iloc[i:i+lookback].values
-            mean_ret = np.mean(window)
-            std_ret = np.std(window)
-            
-            features.append([
-                std_ret,                                      
-                mean_ret,                                     
-                np.max(window),                               
-                np.min(window),                               
-                std_ret / (abs(mean_ret) + 1e-8),             
-                np.abs(window).mean()                         
-            ])
-            targets.append(np.std(returns.iloc[i+lookback:i+lookback+5].values))
-        
-        return np.nan_to_num(np.array(features)), np.array(targets)
+# ==========================================
+# 1. IVR & IVP
+# ==========================================
+def plot_nifty_volatility():
+    ticker = "^INDIAVIX"
+    data = yf.download(ticker, period="1y", progress=False)
+    if data.empty: return None
+
+    close_prices = data['Close'].squeeze()
+    current_iv = float(close_prices.iloc[-1])
+    high_52w = float(close_prices.max())
+    low_52w = float(close_prices.min())
+
+    ivr = ((current_iv - low_52w) / (high_52w - low_52w)) * 100
+    days_below = (close_prices < current_iv).sum()
+    total_days = len(close_prices)
+    ivp = (days_below / total_days) * 100
+
+    if ivr > 50:
+        regime = "HIGH VOLATILITY: Net Short Premium"
+        color_theme = '#00FF00' 
+    else:
+        regime = "LOW VOLATILITY: Net Long Premium"
+        color_theme = '#FF3333' 
+
+    fig, ax = plt.subplots(figsize=(12, 7), dpi=120)
+    ax.plot(close_prices.index, close_prices.values, color='#00FFFF', linewidth=1.5, label='India VIX (1Y)')
+    ax.axhline(high_52w, color='red', linestyle='--', alpha=0.5, label=f'52W High: {high_52w:.2f}')
+    ax.axhline(low_52w, color='green', linestyle='--', alpha=0.5, label=f'52W Low: {low_52w:.2f}')
+    ax.axhline(current_iv, color='white', linestyle='-', linewidth=2, label=f'Current: {current_iv:.2f}')
+    ax.fill_between(close_prices.index, low_52w, current_iv, color='white', alpha=0.05)
+
+    ax.set_title('NIFTY Implied Volatility (IVR & IVP)', fontsize=18, color='white', pad=20, fontweight='bold')
+    ax.set_ylabel('VIX Level', color='gray', fontsize=12)
+    ax.grid(True, color='#2A2A2A', linestyle=':')
+    ax.legend(loc='upper right', facecolor='black', edgecolor='gray', fontsize=10)
+
+    props = dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.8, edgecolor=color_theme, linewidth=1.5)
+    text_str = (f"🎯 IV Rank (IVR): {ivr:.1f}%\n📊 IV Percentile (IVP): {ivp:.1f}%\n"
+                f"⚡ Current VIX: {current_iv:.2f}\n---------------------------\n🤖 Edge: {regime}")
+    ax.text(0.02, 0.95, text_str, transform=ax.transAxes, fontsize=12,
+            verticalalignment='top', bbox=props, color='white', fontweight='bold')
+    plt.tight_layout()
+    return fig
+
+# ==========================================
+# 2. Expected Move
+# ==========================================
+def plot_expected_move():
+    nifty_data = yf.download("^NSEi", period="1mo", progress=False)
+    vix_data = yf.download("^INDIAVIX", period="5d", progress=False)
+    if nifty_data.empty or vix_data.empty: return None
+
+    nifty_close = nifty_data['Close'].squeeze()
+    spot_price = float(nifty_close.iloc[-1])
+    current_vix = float(vix_data['Close'].squeeze().iloc[-1])
+
+    daily_volatility = (current_vix / 100) * np.sqrt(1/365)
+    expected_move_points = spot_price * daily_volatility
+    upper_bound = spot_price + expected_move_points
+    lower_bound = spot_price - expected_move_points
+
+    fig, ax = plt.subplots(figsize=(12, 7), dpi=120)
+    recent_nifty = nifty_close.tail(15)
+    x_dates = np.arange(len(recent_nifty))
+
+    ax.plot(x_dates, recent_nifty.values, color='#00FFFF', linewidth=2, marker='o', label='Nifty 50 Close')
+    tomorrow_x = len(recent_nifty)
+    ax.hlines(spot_price, xmin=x_dates[-1], xmax=tomorrow_x, color='white', linestyle='-', linewidth=2)
+    ax.scatter(tomorrow_x, spot_price, color='white', s=70, zorder=5)
+    ax.scatter(tomorrow_x, upper_bound, color='#00FF00', s=120, marker='^', zorder=5)
+    ax.scatter(tomorrow_x, lower_bound, color='#FF3333', s=120, marker='v', zorder=5)
+    ax.hlines(upper_bound, xmin=x_dates[-1], xmax=tomorrow_x, color='#00FF00', linestyle='--', linewidth=1.5)
+    ax.hlines(lower_bound, xmin=x_dates[-1], xmax=tomorrow_x, color='#FF3333', linestyle='--', linewidth=1.5)
+    ax.fill_between([x_dates[-1], tomorrow_x], [spot_price, lower_bound], [spot_price, upper_bound], color='gray', alpha=0.2)
+
+    ax.set_title('NIFTY 50 Implied Daily Expected Move', fontsize=18, color='white', pad=20, fontweight='bold')
+    ax.set_ylabel('Nifty 50 Price', color='gray', fontsize=12)
+    ax.grid(True, color='#2A2A2A', linestyle=':')
+    ax.set_xticks([]) 
+    ax.legend(['Nifty 50 Close', 'Upper Bound (+1 SD)', 'Lower Bound (-1 SD)'], loc='upper left', facecolor='black', edgecolor='gray', fontsize=10)
+
+    props = dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.8, edgecolor='white', linewidth=1.5)
+    text_str = (f"⚡ Current VIX: {current_vix:.2f}\n🎯 Spot Price: {spot_price:.2f}\n"
+                f"📏 Expected Move: ± {expected_move_points:.1f} points\n---------------------------\n"
+                f"🟢 Safe Call Strike: > {upper_bound:.0f}\n🔴 Safe Put Strike: < {lower_bound:.0f}")
+    ax.text(0.02, 0.45, text_str, transform=ax.transAxes, fontsize=12,
+            verticalalignment='center', bbox=props, color='white', fontweight='bold')
+    plt.tight_layout()
+    return fig
+
+# ==========================================
+# 3. Correlation
+# ==========================================
+def plot_index_divergence():
+    tickers = {"Nifty 50": "^NSEI", "Bank Nifty": "^NSEBANK"}
+    data = yf.download(list(tickers.values()), period="1y", progress=False)['Close']
+    if data.empty: return None
+
+    data.columns = ['Bank Nifty', 'Nifty 50']
+    data = data.dropna()
+    normalized_prices = (data / data.iloc[0]) * 100
+    log_returns = np.log(data / data.shift(1)).dropna()
+    rolling_correlation = log_returns['Nifty 50'].rolling(window=20).corr(log_returns['Bank Nifty'])
+
+    current_nifty = float(data['Nifty 50'].iloc[-1])
+    current_bank = float(data['Bank Nifty'].iloc[-1])
+    current_corr = float(rolling_correlation.iloc[-1])
+
+    if current_corr > 0.80:
+        regime = "HIGH CORRELATION"
+        stat_property = "Synchronized Movement / Low Dispersion"
+        color_theme = '#00FF00' 
+    elif current_corr < 0.50:
+        regime = "SEVERE DIVERGENCE"
+        stat_property = "Sector Rotation / High Dispersion Warning"
+        color_theme = '#FF3333' 
+    else:
+        regime = "MODERATE DIVERGENCE"
+        stat_property = "Decoupling / Monitoring Phase"
+        color_theme = '#FFA500' 
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), dpi=120, gridspec_kw={'height_ratios': [1.5, 1]})
+    ax1.plot(normalized_prices.index, normalized_prices['Nifty 50'], color='#00FFFF', linewidth=2, label='Nifty 50 (Normalized)')
+    ax1.plot(normalized_prices.index, normalized_prices['Bank Nifty'], color='#FFA500', linewidth=2, label='Bank Nifty (Normalized)')
+    ax1.fill_between(normalized_prices.index, normalized_prices['Nifty 50'], normalized_prices['Bank Nifty'], color='gray', alpha=0.2, label='Performance Spread')
+    ax1.set_title('Inter-Index Correlation & Divergence', fontsize=18, color='white', pad=15, fontweight='bold')
+    ax1.set_ylabel('Normalized Price', color='gray')
+    ax1.grid(True, color='#2A2A2A', linestyle=':')
+    ax1.legend(loc='upper left', facecolor='black', edgecolor='gray')
+
+    ax2.plot(rolling_correlation.index, rolling_correlation, color='white', linewidth=1.5, label='20-Day Rolling Correlation')
+    ax2.axhline(0.80, color='#00FF00', linestyle='--', linewidth=1.5, label='High Correlation (>0.80)')
+    ax2.axhline(0.50, color='#FF3333', linestyle='--', linewidth=1.5, label='Severe Divergence (<0.50)')
+    ax2.fill_between(rolling_correlation.index, 0.50, rolling_correlation, where=(rolling_correlation < 0.50), color='#FF3333', alpha=0.3, interpolate=True)
+    ax2.set_ylabel('Pearson Correlation (r)', color='gray')
+    ax2.set_ylim(-0.2, 1.1)
+    ax2.grid(True, color='#2A2A2A', linestyle=':')
+    ax2.legend(loc='lower left', facecolor='black', edgecolor='gray')
+
+    props = dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.9, edgecolor=color_theme, linewidth=1.5)
+    text_str = (f"Nifty 50: {current_nifty:.2f}\nBank Nifty: {current_bank:.2f}\n"
+                f"20-Day Correlation: {current_corr:.2f}\n---------------------------\nStat Property: {stat_property}")
+    ax1.text(0.02, 0.05, text_str, transform=ax1.transAxes, fontsize=12, verticalalignment='bottom', bbox=props, color='white', fontweight='bold')
+    plt.tight_layout()
+    return fig
+
+# ==========================================
+# 4. Volatility Cone
+# ==========================================
+def plot_volatility_cone():
+    ticker = "^NSEI"
+    data = yf.download(ticker, start="2015-01-01", progress=False)
+    data['Returns'] = np.log(data['Close'] / data['Close'].shift(1))
     
-    def train(self, price_data):
-        X, y = self.prepare_features(price_data)
-        if X is None or len(X) == 0:
-            return False
-            
-        X_scaled = self.scaler.fit_transform(X)
-        
-        for name, model in self.models.items():
-            try:
-                model.fit(X_scaled, y)
-            except Exception as e:
-                print(f"Failed to train {name}: {e}")
-        
-        self.is_trained = True
-        return True
+    windows = [10, 20, 30, 60, 90, 120, 180, 252]
+    max_vol, min_vol, median_vol, current_vol = [], [], [], []
+
+    for window in windows:
+        rolling_vol = data['Returns'].rolling(window=window).std() * np.sqrt(252)
+        max_vol.append(rolling_vol.max() * 100)       
+        min_vol.append(rolling_vol.min() * 100)
+        median_vol.append(rolling_vol.median() * 100)
+        current_vol.append(rolling_vol.iloc[-1] * 100) 
+
+    fig = plt.figure(figsize=(12, 7))
+    plt.plot(windows, max_vol, marker='o', color='red', linewidth=2, label='Maximum Volatility')
+    plt.plot(windows, min_vol, marker='o', color='limegreen', linewidth=2, label='Minimum Volatility')
+    plt.plot(windows, median_vol, marker='s', color='white', linewidth=1.5, linestyle='--', label='Median Volatility')
+    plt.plot(windows, current_vol, marker='X', color='yellow', linewidth=3, markersize=10, label='Current Volatility')
+    plt.fill_between(windows, min_vol, max_vol, color='gray', alpha=0.2)
+    plt.title(f'Volatility Cone for Nifty 50 ({ticker})', fontsize=18, fontweight='bold', color='white')
+    plt.xlabel('Time Window (Trading Days)', fontsize=14)
+    plt.ylabel('Annualized Volatility (%)', fontsize=14)
+    plt.xticks(windows)
+    plt.grid(color='gray', linestyle=':', alpha=0.5)
+    plt.legend(loc='upper right', fontsize=12)
+    plt.tight_layout()
+    return fig
+
+# ==========================================
+# 5. Volatility Risk Premium (VRP)
+# ==========================================
+def plot_vrp():
+    nifty_data = yf.download("^NSEI", period="6mo", progress=False)
+    vix_data = yf.download("^INDIAVIX", period="6mo", progress=False)
+    if nifty_data.empty or vix_data.empty: return None
+
+    nifty_close = nifty_data['Close'].squeeze()
+    vix_close = vix_data['Close'].squeeze()
     
-    def predict(self, price_data):
-        if not self.is_trained: return None
-            
-        X, _ = self.prepare_features(price_data)
-        if X is None or len(X) == 0: return None
-            
-        X_scaled = self.scaler.transform(X[-1:])
-        
-        predictions = []
-        for model in self.models.values():
-            try:
-                predictions.append(model.predict(X_scaled)[0])
-            except:
-                continue
-        
-        return np.mean(predictions) if predictions else None
+    log_returns = np.log(nifty_close / nifty_close.shift(1))
+    historical_vol = log_returns.rolling(window=20).std() * np.sqrt(252) * 100
 
-class TrendMLPredictor:
-    def __init__(self):
-        self.model = GradientBoostingRegressor(n_estimators=50, random_state=42)
-        self.scaler = StandardScaler()
-        self.is_trained = False
+    df = pd.DataFrame({'VIX': vix_close, 'HV': historical_vol}).dropna()
+    df['VRP'] = df['VIX'] - df['HV']
+
+    current_vix = float(df['VIX'].iloc[-1])
+    current_hv = float(df['HV'].iloc[-1])
+    current_vrp = float(df['VRP'].iloc[-1])
+
+    if current_vrp > 0:
+        regime, stat_property, color_theme = "POSITIVE VRP", "Implied Risk > Realized Risk", '#00FF00'
+    else:
+        regime, stat_property, color_theme = "NEGATIVE VRP", "Realized Risk > Implied Risk", '#FF3333'
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), dpi=120, gridspec_kw={'height_ratios': [2, 1]})
+    ax1.plot(df.index, df['VIX'], color='#00FFFF', linewidth=2, label='Implied Volatility (India VIX)')
+    ax1.plot(df.index, df['HV'], color='#FFA500', linewidth=2, label='Realized Volatility (20-Day HV)')
+    ax1.fill_between(df.index, df['HV'], df['VIX'], where=(df['VIX'] > df['HV']), color='green', alpha=0.3)
+    ax1.fill_between(df.index, df['HV'], df['VIX'], where=(df['VIX'] <= df['HV']), color='red', alpha=0.3)
+    ax1.set_title('NIFTY 50 Volatility Risk Premium (VRP)', fontsize=18, color='white', pad=15, fontweight='bold')
+    ax1.grid(True, color='#2A2A2A', linestyle=':')
+    ax1.legend(loc='upper left', facecolor='black', edgecolor='gray')
+
+    bar_colors = np.where(df['VRP'] > 0, '#00FF00', '#FF3333')
+    ax2.bar(df.index, df['VRP'], color=bar_colors, alpha=0.7, width=1)
+    ax2.axhline(0, color='white', linewidth=1)
+    ax2.set_ylabel('VRP Spread (%)', color='gray')
+    ax2.grid(True, color='#2A2A2A', linestyle=':')
+
+    props = dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.9, edgecolor=color_theme, linewidth=1.5)
+    text_str = (f"VIX (Expected): {current_vix:.2f}%\n20-Day HV (Actual): {current_hv:.2f}%\n"
+                f"VRP Spread: {current_vrp:+.2f}%\n---------------------------\nRegime: {regime}\nProp: {stat_property}")
+    ax1.text(0.02, 0.05, text_str, transform=ax1.transAxes, fontsize=12, verticalalignment='bottom', bbox=props, color='white', fontweight='bold')
+    plt.tight_layout()
+    return fig
+
+# ==========================================
+# 6. Hurst Exponent
+# ==========================================
+def calculate_hurst(ts):
+    if len(ts) < 20: return np.nan
+    lags = range(2, 20)
+    tau = [lag for lag in lags]
+    ts_arr = ts.values
+    reg = [np.std(ts_arr[lag:] - ts_arr[:-lag]) for lag in lags]
+    poly = np.polyfit(np.log(tau), np.log(reg), 1)
+    return poly[0]
+
+def plot_hurst_regime():
+    data = yf.download("^NSEi", period="1y", progress=False)
+    if data.empty: return None
+    nifty_close = data['Close'].squeeze()
+    log_prices = np.log(nifty_close)
+    hurst_series = log_prices.rolling(window=60).apply(calculate_hurst, raw=False)
+    df = pd.DataFrame({'Close': nifty_close, 'Hurst': hurst_series}).dropna()
+
+    current_price = float(df['Close'].iloc[-1])
+    current_hurst = float(df['Hurst'].iloc[-1])
+
+    if current_hurst < 0.45: regime, stat_property, color_theme = "MEAN REVERTING", "Range-Bound Action", '#FF3333'
+    elif current_hurst > 0.55: regime, stat_property, color_theme = "TRENDING", "Directional Movement", '#00FF00'
+    else: regime, stat_property, color_theme = "RANDOM WALK", "Unpredictable Noise", '#FFA500'
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), dpi=120, gridspec_kw={'height_ratios': [1.5, 1]})
+    ax1.plot(df.index, df['Close'], color='white', linewidth=1.5, label='Nifty 50 Close')
+    ax1.set_title('NIFTY 50 Market Regime (Hurst Exponent)', fontsize=18, color='white', pad=15, fontweight='bold')
+    ax1.grid(True, color='#2A2A2A', linestyle=':')
+    ax1.axvspan(df.index[-15], df.index[-1], color=color_theme, alpha=0.1)
+
+    ax2.plot(df.index, df['Hurst'], color='#00FFFF', linewidth=2, label='60-Day Hurst Exponent')
+    ax2.axhline(0.55, color='#00FF00', linestyle='--', linewidth=1.5)
+    ax2.axhline(0.45, color='#FF3333', linestyle='--', linewidth=1.5)
+    ax2.fill_between(df.index, 0.55, df['Hurst'], where=(df['Hurst'] > 0.55), color='#00FF00', alpha=0.2)
+    ax2.fill_between(df.index, 0.45, df['Hurst'], where=(df['Hurst'] < 0.45), color='#FF3333', alpha=0.2)
+    ax2.set_ylabel('Hurst Value (H)', color='gray')
+    ax2.grid(True, color='#2A2A2A', linestyle=':')
+    ax2.set_ylim(0.3, 0.7)
+
+    props = dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.9, edgecolor=color_theme, linewidth=1.5)
+    text_str = (f"Current Nifty: {current_price:.2f}\nHurst (H): {current_hurst:.3f}\n"
+                f"Regime: {regime}\n---------------------------\nStat Property: {stat_property}")
+    ax1.text(0.02, 0.05, text_str, transform=ax1.transAxes, fontsize=12, verticalalignment='bottom', bbox=props, color='white', fontweight='bold')
+    plt.tight_layout()
+    return fig
+
+# ==========================================
+# 7. Liquidity Detector
+# ==========================================
+def plot_liquidity_sweep():
+    data = yf.download("^NSEi", period="30d", interval="15m", progress=False)
+    if data.empty: return None
+    if isinstance(data.columns, pd.MultiIndex): data.columns = [col[0] for col in data.columns]
+
+    window = 20 
+    data['Prev_High'] = data['High'].rolling(window=window).max().shift(1)
+    data['Prev_Low'] = data['Low'].rolling(window=window).min().shift(1)
+    data['Supply_Sweep'] = (data['High'] > data['Prev_High']) & (data['Close'] < data['Prev_High'])
+    data['Demand_Sweep'] = (data['Low'] < data['Prev_Low']) & (data['Close'] > data['Prev_Low'])
+    current_price = float(data['Close'].iloc[-1])
+
+    if data['Supply_Sweep'].iloc[-1]: regime, stat_property, color_theme = "SUPPLY LIQUIDITY SWEPT", "Failed Breakout", '#FF3333'
+    elif data['Demand_Sweep'].iloc[-1]: regime, stat_property, color_theme = "DEMAND LIQUIDITY SWEPT", "Failed Breakdown", '#00FF00'
+    else: regime, stat_property, color_theme = "PRICE DISCOVERY PHASE", "Inside Structural Bounds", '#00FFFF'
+
+    fig, ax = plt.subplots(figsize=(12, 7), dpi=120)
+    plot_data = data.tail(60).copy()
+    plot_data['Index'] = np.arange(len(plot_data))
+
+    up = plot_data[plot_data['Close'] >= plot_data['Open']]
+    down = plot_data[plot_data['Close'] < plot_data['Open']]
+
+    ax.vlines(up['Index'], up['Low'], up['High'], color='#00FF00', linewidth=1.5)
+    ax.vlines(down['Index'], down['Low'], down['High'], color='#FF3333', linewidth=1.5)
+    ax.bar(up['Index'], up['Close'] - up['Open'], bottom=up['Open'], color='#00FF00', width=0.6)
+    ax.bar(down['Index'], down['Open'] - down['Close'], bottom=down['Close'], color='#FF3333', width=0.6)
+
+    for idx, row in plot_data.iterrows():
+        if row['Supply_Sweep']:
+            ax.scatter(row['Index'], row['High'] + 10, marker='v', color='#FF3333', s=150, zorder=5)
+            ax.axhline(row['Prev_High'], color='#FF3333', linestyle='--', alpha=0.5, linewidth=1)
+        if row['Demand_Sweep']:
+            ax.scatter(row['Index'], row['Low'] - 10, marker='^', color='#00FF00', s=150, zorder=5)
+            ax.axhline(row['Prev_Low'], color='#00FF00', linestyle='--', alpha=0.5, linewidth=1)
+
+    ax.set_title('NIFTY 50 Intraday Liquidity Sweep (15m)', fontsize=16, color='white', pad=15, fontweight='bold')
+    ax.grid(True, color='#2A2A2A', linestyle=':')
+    ax.set_xticks([]) 
+
+    props = dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.9, edgecolor=color_theme, linewidth=1.5)
+    text_str = f"Live Spot Price: {current_price:.2f}\n---------------------------\nMicrostructure: {regime}\nProp: {stat_property}"
+    ax.text(0.02, 0.05, text_str, transform=ax.transAxes, fontsize=12, verticalalignment='bottom', bbox=props, color='white', fontweight='bold')
+    plt.tight_layout()
+    return fig
+
+# ==========================================
+# 8. Parkinson Estimator
+# ==========================================
+def calculate_parkinson():
+    data = yf.download('^NSEi', period='1y', progress=False)
+    h, l, c = data['High'].squeeze(), data['Low'].squeeze(), data['Close'].squeeze()
+    N = len(data)
+
+    log_hl = np.log(h / l)
+    log_hl_squared = log_hl ** 2
+    constant = 1 / (4 * N * np.log(2))
+    parkinson_variance = constant * log_hl_squared.sum()
+    parkinson_vol = np.sqrt(parkinson_variance) * np.sqrt(252)
+
+    log_returns = np.log(c / c.shift(1))
+    c2c_vol = log_returns.std() * np.sqrt(252)
     
-    def prepare_features(self, price_data, lookback=20):
-        if len(price_data) < lookback + 5: return None, None
-            
-        df = pd.DataFrame(price_data)
-        df.columns = ['close']
-        
-        df['returns'] = df['close'].pct_change()
-        df['sma20'] = df['close'].rolling(20).mean()
-        df['rsi'] = self._calculate_rsi(df['close'])
-        df['macd'] = self._calculate_macd(df['close'])
-        df['vol'] = df['returns'].rolling(20).std()
-        
-        df = df.replace([np.inf, -np.inf], np.nan).dropna()
-        
-        features, targets = [], []
-        for i in range(len(df) - lookback - 5):
-            f = [
-                (df['close'].iloc[i+lookback] / df['close'].iloc[i]) - 1,  
-                (df['sma20'].iloc[i+lookback] / df['close'].iloc[i+lookback]) - 1,
-                df['rsi'].iloc[i+lookback] / 50,
-                df['macd'].iloc[i+lookback],
-                df['vol'].iloc[i+lookback]
-            ]
-            features.append(f)
-            targets.append((df['close'].iloc[i+lookback+5] / df['close'].iloc[i+lookback]) - 1)
-        
-        return np.nan_to_num(np.array(features)), np.array(targets)
-    
-    @staticmethod
-    def _calculate_rsi(prices, period=14):
-        delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / (loss + 1e-8)
-        return 100 - (100 / (1 + rs))
-    
-    @staticmethod
-    def _calculate_macd(prices, fast=12, slow=26):
-        return prices.ewm(span=fast).mean() - prices.ewm(span=slow).mean()
-    
-    def train(self, price_data):
-        X, y = self.prepare_features(price_data)
-        if X is None or len(X) == 0: return False
-            
-        X_scaled = self.scaler.fit_transform(X)
-        self.model.fit(X_scaled, y)
-        self.is_trained = True
-        return True
-    
-    def predict(self, price_data):
-        if not self.is_trained: return None
-        X, _ = self.prepare_features(price_data)
-        if X is None or len(X) == 0: return None
-        X_scaled = self.scaler.transform(X[-1:])
-        return self.model.predict(X_scaled)[0]
+    return N, float(parkinson_vol)*100, float(c2c_vol)*100
 
-# ==================== DATA FETCHING WORKER ====================
-class DataFetcher(QThread):
-    data_ready = pyqtSignal(dict)
-    error_occurred = pyqtSignal(str)
-    
-    def run(self):
-        try:
-            print("Fetching market & crypto data in background...")
-            tickers = {
-                'nifty': '^NSEI',
-                'vix': '^INDIAVIX',
-                'bank': '^NSEBANK',
-                'btc': 'BTC-USD',
-                'eth': 'ETH-USD'
-            }
-            results = {}
-            for name, ticker in tickers.items():
-                data = yf.download(ticker, period="1y", progress=False)
-                if data.empty:
-                    raise Exception(f"No data for {ticker}")
-                results[name] = data
-            
-            self.data_ready.emit(results)
-        except Exception as e:
-            self.error_occurred.emit(f"Error fetching data: {str(e)}")
+# ==========================================
+# STREAMLIT UI LAYOUT
+# ==========================================
+st.title("⚡ Quantitative Financial Models Dashboard")
+st.markdown("Select a mathematical model from the sidebar to visualize institutional risk metrics.")
 
-# ==================== ANALYSIS MODULES ====================
-class FinancialAnalyzer:
-    @staticmethod
-    def calculate_ivr_ivp(vix_data):
-        close_prices = vix_data['Close'].squeeze()
-        current_iv = float(close_prices.iloc[-1])
-        high_52w = float(close_prices.max())
-        low_52w = float(close_prices.min())
-        
-        ivr = ((current_iv - low_52w) / (high_52w - low_52w + 1e-8)) * 100
-        days_below = (close_prices < current_iv).sum()
-        ivp = (days_below / len(close_prices)) * 100
-        
-        return {'current_iv': current_iv, 'ivr': ivr, 'ivp': ivp, 'high_52w': high_52w, 'low_52w': low_52w}
-    
-    @staticmethod
-    def calculate_expected_move(nifty_close, vix_value):
-        spot_price = float(nifty_close.iloc[-1])
-        daily_volatility = (vix_value / 100) * np.sqrt(1/365)
-        expected_move = spot_price * daily_volatility
-        return {'spot_price': spot_price, 'expected_move': expected_move, 'upper_bound': spot_price + expected_move, 'lower_bound': spot_price - expected_move}
-    
-    @staticmethod
-    def calculate_parkinson(high, low):
-        log_hl = np.log(high / low).dropna()
-        if log_hl.empty: return 0.0
-        constant = 1 / (4 * len(log_hl) * np.log(2))
-        parkinson_var = constant * (log_hl ** 2).sum()
-        return float(np.sqrt(parkinson_var) * np.sqrt(252) * 100)
+# Sidebar Navigation
+st.sidebar.header("Navigation")
+tools = [
+    "1. IVR & IVP", 
+    "2. Expected Move", 
+    "3. Correlation Divergence", 
+    "4. Volatility Cone", 
+    "5. Volatility Risk Premium", 
+    "6. Hurst Exponent", 
+    "7. Liquidity Detector", 
+    "8. Parkinson Volatility",
+    "9. FYERS Live Profile (Requires API)"
+]
+selected_tool = st.sidebar.radio("Choose Analysis Tool:", tools)
 
-# ==================== MAIN GUI APPLICATION ====================
-class FinancialDashboard(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("NIFTY & Crypto Analysis Suite")
-        self.setGeometry(100, 100, 1400, 900)
-        
-        self.setStyleSheet("""
-            QMainWindow { background-color: #0d1117; color: #c9d1d9; }
-            QTabBar::tab { background-color: #161b22; color: #8b949e; padding: 8px 20px; border: 1px solid #30363d; }
-            QTabBar::tab:selected { background-color: #0d1117; color: #58a6ff; border-bottom: 2px solid #58a6ff; }
-            QPushButton { background-color: #238636; color: white; border: none; border-radius: 6px; padding: 8px 16px; font-weight: bold; }
-            QPushButton:hover { background-color: #2ea043; }
-            QLabel { color: #c9d1d9; }
-            QTableWidget { background-color: #0d1117; color: #c9d1d9; gridline-color: #30363d; }
-        """)
-        
-        self.data_dict = {}
-        self.analyzer = FinancialAnalyzer()
-        self.vol_predictor = VolatilityMLPredictor()
-        self.trend_predictor = TrendMLPredictor()
-        
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
-        
-        self.create_dashboard_tab()
-        self.create_ivr_ivp_tab()
-        self.create_expected_move_tab()
-        self.create_correlation_tab()
-        self.create_volatility_cone_tab()
-        self.create_vrp_tab()
-        self.create_hurst_tab()
-        self.create_ml_prediction_tab()
-        self.create_summary_tab()
-        
-        # Background data fetch to prevent UI freeze
-        self.load_all_data()
-        
-        self.refresh_timer = QTimer()
-        self.refresh_timer.timeout.connect(self.load_all_data)
-        self.refresh_timer.start(300000) 
-    
-    def create_dashboard_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
-        
-        header = QLabel("Financial Analysis Suite (NIFTY & Crypto)")
-        header.setFont(QFont("Segoe UI", 24, QFont.Bold))
-        header.setStyleSheet("color: #58a6ff;")
-        layout.addWidget(header)
-        
-        status_layout = QHBoxLayout()
-        self.status_label = QLabel("Initializing...")
-        self.status_label.setStyleSheet("color: #ffa657; font-size: 14px;")
-        status_layout.addWidget(self.status_label)
-        
-        refresh_btn = QPushButton("🔄 Refresh Data")
-        refresh_btn.clicked.connect(self.load_all_data)
-        status_layout.addWidget(refresh_btn)
-        status_layout.addStretch()
-        layout.addLayout(status_layout)
-        
-        metrics_layout = QHBoxLayout()
-        self.metric_labels = {}
-        metrics = ['Nifty Price', 'Bank Nifty', 'Bitcoin', 'Ethereum', 'VIX', 'Expected Move']
-        colors = ['#58a6ff', '#85e89d', '#f7931a', '#627eea', '#ffa657', '#ff7b72']
-        
-        for metric, color in zip(metrics, colors):
-            label = QLabel(f"{metric}\n--")
-            label.setStyleSheet(f"color: {color}; font-size: 14px; padding: 15px; border: 1px solid #30363d; border-radius: 6px; font-weight:bold;")
-            metrics_layout.addWidget(label)
-            self.metric_labels[metric] = label
-        
-        layout.addLayout(metrics_layout)
-        layout.addStretch()
-        widget.setLayout(layout)
-        self.tabs.addTab(widget, "📊 Dashboard")
-        
-    def create_ivr_ivp_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
-        self.ivr_chart = MplCanvas(self, width=10, height=6)
-        layout.addWidget(self.ivr_chart)
-        self.ivr_info = QLabel()
-        self.ivr_info.setStyleSheet("background-color: #161b22; padding: 15px; border-radius: 6px;")
-        layout.addWidget(self.ivr_info)
-        widget.setLayout(layout)
-        self.tabs.addTab(widget, "📈 IVR & IVP")
+st.sidebar.markdown("---")
+st.sidebar.header("FYERS API Settings (For Tool 9)")
+fyers_token = st.sidebar.text_input("Access Token", type="password")
+fyers_client = st.sidebar.text_input("Client ID")
 
-    def create_expected_move_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
-        self.exp_move_chart = MplCanvas(self, width=10, height=6)
-        layout.addWidget(self.exp_move_chart)
-        self.exp_move_info = QLabel()
-        self.exp_move_info.setStyleSheet("background-color: #161b22; padding: 15px; border-radius: 6px;")
-        layout.addWidget(self.exp_move_info)
-        widget.setLayout(layout)
-        self.tabs.addTab(widget, "🎯 Expected Move")
+# Main Display Logic
+if selected_tool == "1. IVR & IVP":
+    st.subheader("📊 IV Rank & IV Percentile")
+    with st.spinner("Fetching data..."):
+        st.pyplot(plot_nifty_volatility())
 
-    def create_correlation_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
-        title = QLabel("Multi-Asset Correlation (Nifty, BankNifty, BTC, ETH)")
-        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
-        title.setStyleSheet("color: #58a6ff;")
-        layout.addWidget(title)
-        
-        self.corr_chart = MplCanvas(self, width=10, height=6)
-        layout.addWidget(self.corr_chart)
-        self.corr_info = QLabel()
-        self.corr_info.setStyleSheet("background-color: #161b22; padding: 15px; border-radius: 6px;")
-        layout.addWidget(self.corr_info)
-        widget.setLayout(layout)
-        self.tabs.addTab(widget, "🔗 Correlation")
+elif selected_tool == "2. Expected Move":
+    st.subheader("📏 Daily Expected Move (Market Maker Bounds)")
+    with st.spinner("Calculating probability cones..."):
+        st.pyplot(plot_expected_move())
 
-    def create_volatility_cone_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
-        self.vol_cone_chart = MplCanvas(self, width=10, height=6)
-        layout.addWidget(self.vol_cone_chart)
-        widget.setLayout(layout)
-        self.tabs.addTab(widget, "📊 Volatility Cone")
+elif selected_tool == "3. Correlation Divergence":
+    st.subheader("🔄 Inter-Index Correlation (Nifty vs Bank Nifty)")
+    with st.spinner("Analyzing dispersion..."):
+        st.pyplot(plot_index_divergence())
 
-    def create_vrp_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
-        self.vrp_chart = MplCanvas(self, width=10, height=6)
-        layout.addWidget(self.vrp_chart)
-        self.vrp_info = QLabel()
-        self.vrp_info.setStyleSheet("background-color: #161b22; padding: 15px; border-radius: 6px;")
-        layout.addWidget(self.vrp_info)
-        widget.setLayout(layout)
-        self.tabs.addTab(widget, "⚡ VRP")
+elif selected_tool == "4. Volatility Cone":
+    st.subheader("🌪️ Historical Volatility Cone")
+    with st.spinner("Mapping volatility term structure..."):
+        st.pyplot(plot_volatility_cone())
 
-    def create_hurst_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
-        self.hurst_chart = MplCanvas(self, width=10, height=6)
-        layout.addWidget(self.hurst_chart)
-        self.hurst_info = QLabel()
-        self.hurst_info.setStyleSheet("background-color: #161b22; padding: 15px; border-radius: 6px;")
-        layout.addWidget(self.hurst_info)
-        widget.setLayout(layout)
-        self.tabs.addTab(widget, "🌊 Hurst Exponent")
+elif selected_tool == "5. Volatility Risk Premium":
+    st.subheader("💰 Volatility Risk Premium (VRP)")
+    with st.spinner("Calculating Implied vs Realized spreads..."):
+        st.pyplot(plot_vrp())
 
-    def create_ml_prediction_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
-        self.ml_info = QLabel()
-        self.ml_info.setStyleSheet("background-color: #161b22; padding: 15px; border-radius: 6px;")
-        layout.addWidget(self.ml_info)
-        self.ml_chart = MplCanvas(self, width=10, height=6)
-        layout.addWidget(self.ml_chart)
-        widget.setLayout(layout)
-        self.tabs.addTab(widget, "🤖 ML Predictions")
+elif selected_tool == "6. Hurst Exponent":
+    st.subheader("📈 Hurst Exponent (Market Regime Indicator)")
+    with st.spinner("Analyzing fractional brownian motion..."):
+        st.pyplot(plot_hurst_regime())
 
-    def create_summary_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
-        self.summary_table = QTableWidget()
-        self.summary_table.setColumnCount(2)
-        self.summary_table.setHorizontalHeaderLabels(["Metric", "Value"])
-        self.summary_table.setStyleSheet("background-color: #0d1117; color: #c9d1d9; gridline-color: #30363d;")
-        layout.addWidget(self.summary_table)
-        
-        export_btn = QPushButton("📥 Export Report to JSON")
-        export_btn.clicked.connect(self.export_report)
-        layout.addWidget(export_btn)
-        widget.setLayout(layout)
-        self.tabs.addTab(widget, "📋 Summary")
+elif selected_tool == "7. Liquidity Detector":
+    st.subheader("💧 Intraday Liquidity Sweeps")
+    with st.spinner("Hunting order blocks..."):
+        st.pyplot(plot_liquidity_sweep())
 
-    def load_all_data(self):
-        self.status_label.setText("Fetching market & crypto data in background...")
-        self.status_label.setStyleSheet("color: #ffa657;")
-        
-        # Start background thread to prevent UI freezing
-        self.fetcher = DataFetcher()
-        self.fetcher.data_ready.connect(self.on_data_fetched)
-        self.fetcher.error_occurred.connect(self.on_fetch_error)
-        self.fetcher.start()
-        
-    def on_fetch_error(self, err_msg):
-        self.status_label.setText(f"❌ {err_msg}")
-        self.status_label.setStyleSheet("color: #ff7b72;")
+elif selected_tool == "8. Parkinson Volatility":
+    st.subheader("📉 Parkinson Estimator (Intraday Risk)")
+    with st.spinner("Calculating variance..."):
+        n, park, c2c = calculate_parkinson()
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Trading Days Analyzed", n)
+        col2.metric("Parkinson Volatility", f"{park:.2f}%", help="Captures intraday high/low swings.")
+        col3.metric("Standard C2C Volatility", f"{c2c:.2f}%", delta=f"{(park-c2c):.2f}% Difference", delta_color="inverse")
 
-    def on_data_fetched(self, data):
-        self.data_dict = data
-        try:
-            self.update_all_charts()
-            self.update_summary()
-            self.status_label.setText(f"✅ Data loaded at {datetime.now().strftime('%H:%M:%S')}")
-            self.status_label.setStyleSheet("color: #85e89d;")
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.on_fetch_error(f"Error processing data: {e}")
+elif selected_tool == "9. FYERS Live Profile (Requires API)":
+    st.subheader("🔥 FYERS Live Option Profile")
+    if fyers_token and fyers_client:
+        st.info("API Credentials Received. Add the `plot_fyers_oi_profile()` execution here using the credentials.")
+        # Fyers execution logic goes here (commented out for safety as it requires live local connection)
+    else:
+        st.warning("⚠️ Please enter your FYERS Access Token and Client ID in the sidebar to use this module.")
 
-    def update_all_charts(self):
-        nifty = self.data_dict['nifty']['Close'].squeeze()
-        vix = self.data_dict['vix']
-        
-        ivr_data = self.analyzer.calculate_ivr_ivp(vix)
-        self.plot_ivr_ivp(ivr_data)
-        
-        exp_move = self.analyzer.calculate_expected_move(nifty, ivr_data['current_iv'])
-        self.plot_expected_move(exp_move)
-        
-        self.plot_correlation()
-        self.plot_vrp()
-        
-        self.train_and_plot_ml()
-        self.update_key_metrics(ivr_data, exp_move)
-
-    def update_key_metrics(self, ivr_data, exp_move):
-        nifty_px = float(self.data_dict['nifty']['Close'].iloc[-1])
-        bank_px = float(self.data_dict['bank']['Close'].iloc[-1])
-        btc_px = float(self.data_dict['btc']['Close'].iloc[-1])
-        eth_px = float(self.data_dict['eth']['Close'].iloc[-1])
-        
-        self.metric_labels['Nifty Price'].setText(f"Nifty\n{nifty_px:,.0f}")
-        self.metric_labels['Bank Nifty'].setText(f"Bank Nifty\n{bank_px:,.0f}")
-        self.metric_labels['Bitcoin'].setText(f"BTC-USD\n${btc_px:,.2f}")
-        self.metric_labels['Ethereum'].setText(f"ETH-USD\n${eth_px:,.2f}")
-        self.metric_labels['VIX'].setText(f"VIX\n{ivr_data['current_iv']:.1f}")
-        self.metric_labels['Expected Move'].setText(f"Nifty Exp Move\n±{exp_move['expected_move']:.0f}")
-
-    def plot_ivr_ivp(self, data):
-        self.ivr_chart.axes.clear()
-        vix_close = self.data_dict['vix']['Close'].tail(252).squeeze()
-        x = range(len(vix_close))
-        self.ivr_chart.axes.plot(x, vix_close.values, color='#00ffff', linewidth=2)
-        self.ivr_chart.axes.axhline(data['current_iv'], color='white')
-        self.ivr_chart.axes.set_title('VIX (1Y)', color='#c9d1d9')
-        self.ivr_chart.axes.set_facecolor('#0d1117')
-        self.ivr_chart.draw()
-        self.ivr_info.setText(f"<b>Current VIX:</b> {data['current_iv']:.2f} | <b>IVR:</b> {data['ivr']:.1f}%")
-
-    def plot_expected_move(self, data):
-        self.exp_move_chart.axes.clear()
-        nifty_close = self.data_dict['nifty']['Close'].tail(15).squeeze()
-        x = range(len(nifty_close))
-        self.exp_move_chart.axes.plot(x, nifty_close.values, color='#00ffff', marker='o')
-        self.exp_move_chart.axes.scatter([len(x)], [data['upper_bound']], color='#85e89d')
-        self.exp_move_chart.axes.scatter([len(x)], [data['lower_bound']], color='#ff7b72')
-        self.exp_move_chart.axes.set_facecolor('#0d1117')
-        self.exp_move_chart.draw()
-        self.exp_move_info.setText(f"<b>Target Range:</b> {data['lower_bound']:.0f} to {data['upper_bound']:.0f}")
-
-    def plot_correlation(self):
-        self.corr_chart.axes.clear()
-        
-        # STRIP TIMEZONES to ensure perfect alignment between Crypto (UTC) and Indian Markets
-        nifty = self.data_dict['nifty']['Close'].copy()
-        nifty.index = nifty.index.tz_localize(None).normalize()
-        
-        bank = self.data_dict['bank']['Close'].copy()
-        bank.index = bank.index.tz_localize(None).normalize()
-        
-        btc = self.data_dict['btc']['Close'].copy()
-        btc.index = btc.index.tz_localize(None).normalize()
-        
-        eth = self.data_dict['eth']['Close'].copy()
-        eth.index = eth.index.tz_localize(None).normalize()
-
-        df = pd.concat([nifty, bank, btc, eth], axis=1).dropna()
-        df.columns = ['Nifty', 'BankNifty', 'BTC', 'ETH']
-        df = df.tail(252)
-
-        df_norm = (df / df.iloc[0]) * 100
-        x = range(len(df_norm))
-        
-        self.corr_chart.axes.plot(x, df_norm['Nifty'].values, color='#00ffff', label='Nifty')
-        self.corr_chart.axes.plot(x, df_norm['BankNifty'].values, color='#85e89d', label='Bank Nifty')
-        self.corr_chart.axes.plot(x, df_norm['BTC'].values, color='#f7931a', label='Bitcoin')
-        self.corr_chart.axes.plot(x, df_norm['ETH'].values, color='#627eea', label='Ethereum')
-        
-        self.corr_chart.axes.legend(facecolor='#161b22', edgecolor='#30363d')
-        self.corr_chart.axes.set_title('Normalized Performance (1Y)', color='#c9d1d9')
-        self.corr_chart.axes.set_facecolor('#0d1117')
-        self.corr_chart.draw()
-        
-        corr_matrix = df.pct_change().corr()
-        btc_nifty_corr = corr_matrix.loc['Nifty', 'BTC']
-        self.corr_info.setText(f"<b>Nifty to Bitcoin Correlation:</b> {btc_nifty_corr:.2f}")
-
-    def plot_vrp(self):
-        self.vrp_chart.axes.clear()
-        log_returns = np.log(self.data_dict['nifty']['Close'] / self.data_dict['nifty']['Close'].shift(1))
-        hv = log_returns.rolling(window=20).std() * np.sqrt(252) * 100
-        vix = self.data_dict['vix']['Close'].squeeze()
-        
-        df = pd.DataFrame({'vix': vix, 'hv': hv}).dropna().tail(180)
-        x = range(len(df))
-        self.vrp_chart.axes.plot(x, df['vix'].values, color='#00ffff', label='VIX')
-        self.vrp_chart.axes.plot(x, df['hv'].values, color='#ffa657', label='HV')
-        self.vrp_chart.axes.set_facecolor('#0d1117')
-        self.vrp_chart.draw()
-
-    def train_and_plot_ml(self):
-        try:
-            nifty = self.data_dict['nifty']['Close']
-            self.vol_predictor.train(nifty)
-            self.trend_predictor.train(nifty)
-            
-            vol_pred = self.vol_predictor.predict(nifty)
-            trend_pred = self.trend_predictor.predict(nifty)
-            
-            self.ml_chart.axes.clear()
-            categories = ['Vol Prediction', '5-day Trend']
-            values = [vol_pred * 100 if vol_pred else 0, (trend_pred * 100) if trend_pred else 0]
-            colors = ['#85e89d' if v > 0 else '#ff7b72' for v in values]
-            
-            self.ml_chart.axes.bar(categories, values, color=colors, alpha=0.8, width=0.6)
-            self.ml_chart.axes.set_facecolor('#0d1117')
-            self.ml_chart.draw()
-            self.ml_info.setText(f"<b>Model Trained!</b> Next Volatility: {values[0]:.2f}%, Expected 5-Day Move: {values[1]:+.2f}%")
-        except Exception as e:
-            self.ml_info.setText(f"ML Error: {e}")
-
-    def update_summary(self):
-        metrics = {}
-        for asset, data in self.data_dict.items():
-            if data.empty: continue
-            current = float(data['Close'].iloc[-1])
-            # Fix IndexError: Use iloc[0] for the oldest loaded day instead of iloc[-252]
-            ytd = float(data['Close'].iloc[0]) 
-            ret = ((current / ytd) - 1) * 100
-            metrics[f'{asset.upper()} Current Price'] = f"{current:,.2f}"
-            metrics[f'{asset.upper()} 1-Year Return'] = f"{ret:+.2f}%"
-
-        self.summary_table.setRowCount(len(metrics))
-        for i, (key, value) in enumerate(metrics.items()):
-            self.summary_table.setItem(i, 0, QTableWidgetItem(key))
-            self.summary_table.setItem(i, 1, QTableWidgetItem(value))
-        self.summary_table.resizeColumnsToContents()
-
-    def export_report(self):
-        try:
-            report = { 'timestamp': datetime.now().isoformat() }
-            for asset, data in self.data_dict.items():
-                report[asset] = {
-                    'price': float(data['Close'].iloc[-1]),
-                    'high_52w': float(data['Close'].max())
-                }
-            
-            # Save locally instead of hardcoded linux path
-            report_path = Path.cwd() / 'analysis_report.json'
-            with open(report_path, 'w') as f:
-                json.dump(report, f, indent=2)
-            
-            QMessageBox.information(self, "Success", f"Report exported to {report_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Export failed: {str(e)}")
-
-
-class MplCanvas(FigureCanvasQTAgg):
-    def __init__(self, parent=None, width=5, height=4, dpi=100):
-        self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor='#0d1117')
-        self.axes = self.fig.add_subplot(111)
-        self.axes.tick_params(colors='#c9d1d9')
-        super(MplCanvas, self).__init__(self.fig)
-        self.setParent(parent)
-
-if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    dashboard = FinancialDashboard()
-    dashboard.show()
-    sys.exit(app.exec_())
+st.markdown("---")
+st.markdown("*Built for Machine Learning Feature Engineering and Quantitative Trading.*")
