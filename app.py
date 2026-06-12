@@ -470,13 +470,20 @@ class FinancialDashboard(QMainWindow):
     def plot_correlation(self):
         self.corr_chart.axes.clear()
         
-        # ALIGN ALL DATA BY DATE TO FIX VALUE ERROR
-        df = pd.concat([
-            self.data_dict['nifty']['Close'],
-            self.data_dict['bank']['Close'],
-            self.data_dict['btc']['Close'],
-            self.data_dict['eth']['Close']
-        ], axis=1).dropna()
+        # STRIP TIMEZONES to ensure perfect alignment between Crypto (UTC) and Indian Markets
+        nifty = self.data_dict['nifty']['Close'].copy()
+        nifty.index = nifty.index.tz_localize(None).normalize()
+        
+        bank = self.data_dict['bank']['Close'].copy()
+        bank.index = bank.index.tz_localize(None).normalize()
+        
+        btc = self.data_dict['btc']['Close'].copy()
+        btc.index = btc.index.tz_localize(None).normalize()
+        
+        eth = self.data_dict['eth']['Close'].copy()
+        eth.index = eth.index.tz_localize(None).normalize()
+
+        df = pd.concat([nifty, bank, btc, eth], axis=1).dropna()
         df.columns = ['Nifty', 'BankNifty', 'BTC', 'ETH']
         df = df.tail(252)
 
