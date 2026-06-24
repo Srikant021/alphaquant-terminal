@@ -15,13 +15,38 @@ from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings('ignore')
 
-# ========================= CONFIG & THEME =========================
-st.set_page_config(
-    page_title="AlphaQuant Master Terminal v10.1",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# ========================= ALADDIN TERMINAL THEME =========================
+st.set_page_config(page_title="Aladdin-Quant Terminal", layout="wide", page_icon="⚡")
+
+st.markdown("""
+    <style>
+        /* Aladdin-Style Container Styling */
+        .stApp { background-color: #05070a; color: #D1D5DB; font-family: 'Inter', sans-serif; }
+        .module-card { 
+            background-color: #0f131a; 
+            border: 1px solid #1e293b; 
+            padding: 15px; 
+            border-radius: 4px; 
+            margin-bottom: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+        h1, h2, h3 { color: #F8FAFC !important; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+        .metric-label { color: #94a3b8; font-size: 11px; text-transform: uppercase; }
+        .metric-value { color: #E2E8F0; font-size: 18px; font-weight: 600; font-family: 'Courier New', monospace; }
+        div[data-testid="stMetricValue"] { color: #67e8f9; font-family: 'Courier New', monospace; font-weight: bold; }
+        hr { margin-top: 2em; margin-bottom: 2em; border-color: #1e293b; }
+        
+        /* Streamlit native container border override to match Aladdin */
+        [data-testid="stVerticalBlockBorderWrapper"] {
+            border: 1px solid #1e293b !important;
+            background-color: #0f131a !important;
+            border-radius: 4px !important;
+        }
+        
+        .news-headline { font-size: 13px; margin-bottom: 8px; border-left: 3px solid; padding-left: 8px;}
+        .news-publisher { font-size: 10px; color: #64748b; text-transform: uppercase; }
+    </style>
+""", unsafe_allow_html=True)
 
 CHART_THEME = {
     "template": "plotly_dark",
@@ -30,17 +55,8 @@ CHART_THEME = {
     "bullish": "#22c55e",     # Green
     "bearish": "#ef4444",     # Red
     "neutral": "white",
-    "watermark": "gray"
+    "watermark": "#334155"    # Slate
 }
-
-st.markdown("""
-    <style>
-        .stApp { background-color: #0B0F19; color: #FFFFFF; }
-        .block-container { padding-top: 2rem; padding-bottom: 5rem; }
-        div[data-testid="stMetricValue"] { color: #67e8f9; font-family: 'Courier New', monospace; font-weight: bold; }
-        hr { margin-top: 3em; margin-bottom: 3em; border-color: #1F2A45; }
-    </style>
-""", unsafe_allow_html=True)
 
 INDIAN_ASSETS = {
     "Nifty 50 (Index)": "^NSEI",
@@ -62,6 +78,34 @@ def calculate_rsi(data, periods=14):
     loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
+
+def get_scalar(series):
+    if isinstance(series, pd.Series):
+        if series.empty: return 0.0
+        val = series.iloc[-1]
+    else:
+        val = series
+    if hasattr(val, 'item'): return float(val.item())
+    return float(val)
+
+def add_watermark(fig):
+    fig.add_annotation(text="ALADDIN QUANT TERMINAL v12.0", xref="paper", yref="paper", x=0.99, y=0.01, showarrow=False, font=dict(size=10, color=CHART_THEME["watermark"]), opacity=0.6)
+
+def aladdin_metric(label, value, delta=None, invert_color=False):
+    if delta:
+        if invert_color:
+            color = "#ef4444" if "+" in delta else "#22c55e" # Red for positive (e.g. DXY up is bad)
+        else:
+            color = "#22c55e" if "+" in delta else "#ef4444" # Green for positive
+    else:
+        color = "white"
+        
+    st.markdown(f"""
+        <div class="module-card">
+            <div class="metric-label">{label}</div>
+            <div class="metric-value">{value} {f'<span style="color:{color}">({delta})</span>' if delta else ''}</div>
+        </div>
+    """, unsafe_allow_html=True)
 
 # ========================= DATA INGESTION ENGINE =========================
 @st.cache_data(ttl=300, show_spinner=False)
@@ -115,17 +159,128 @@ def get_vix_data(asset_class, ticker, period="1y", is_crypto=False):
         days_map = {"5d": 5, "6mo": 180, "1y": 365}
         return vix_df.tail(days_map.get(period, 365))
 
-def get_scalar(series):
-    if isinstance(series, pd.Series):
-        if series.empty: return 0.0
-        val = series.iloc[-1]
-    else:
-        val = series
-    if hasattr(val, 'item'): return float(val.item())
-    return float(val)
 
-def add_watermark(fig):
-    fig.add_annotation(text="AlphaQuant Terminal v10.1", xref="paper", yref="paper", x=0.99, y=0.01, showarrow=False, font=dict(size=10, color=CHART_THEME["watermark"]), opacity=0.6)
+# ========================= 0.1 GLOBAL MACRO PULSE =========================
+def render_macro_pulse():
+    st.subheader("GLOBAL MACRO PULSE & SYSTEMIC LIQUIDITY")
+    
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        f_dxy = executor.submit(fetch_data, "DX-Y.NYB", "5d", "1d", False)
+        f_tnx = executor.submit(fetch_data, "^TNX", "5d", "1d", False)
+        f_hyg = executor.submit(fetch_data, "HYG", "5d", "1d", False)
+        
+        dxy_data = f_dxy.result()
+        tnx_data = f_tnx.result()
+        hyg_data = f_hyg.result()
+        
+    def get_metrics(df):
+        if df is None or len(df) < 2: return 0.0, 0.0
+        cur = get_scalar(df['Close'].iloc[-1])
+        prev = get_scalar(df['Close'].iloc[-2])
+        pct = ((cur - prev) / prev) * 100
+        return cur, pct
+        
+    dxy_cur, dxy_pct = get_metrics(dxy_data)
+    tnx_cur, tnx_pct = get_metrics(tnx_data)
+    hyg_cur, hyg_pct = get_metrics(hyg_data)
+    
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        aladdin_metric("US DOLLAR INDEX (DXY) [Risk-Off Indicator]", f"{dxy_cur:.2f}", f"{dxy_pct:+.2f}%", invert_color=True)
+    with c2:
+        aladdin_metric("10-YEAR TREASURY YIELD (^TNX)", f"{tnx_cur:.2f}%", f"{tnx_pct:+.2f}%", invert_color=True)
+    with c3:
+        aladdin_metric("HIGH YIELD CREDIT (HYG) [Risk-On Indicator]", f"${hyg_cur:.2f}", f"{hyg_pct:+.2f}%", invert_color=False)
+
+# ========================= 0.2 NLP NEWS SENTIMENT ENGINE =========================
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_news_sentiment(ticker, is_crypto):
+    # Map Delta crypto tickers to Yahoo Finance tickers for news
+    y_ticker = ticker
+    if is_crypto:
+        y_ticker = ticker.replace("USD", "-USD")
+        
+    try:
+        tkr = yf.Ticker(y_ticker)
+        news = tkr.news
+    except:
+        news = []
+        
+    if not news:
+        return None, []
+        
+    # Institutional Lexicon Matrix
+    pos_words = ['surge', 'jump', 'gain', 'rally', 'bull', 'upgrade', 'high', 'soar', 'outperform', 'beat', 'growth', 'positive', 'strong', 'buy', 'record', 'soars', 'boom', 'adopt', 'adoption', 'approve', 'etf', 'profit', 'launch']
+    neg_words = ['crash', 'fall', 'drop', 'bear', 'downgrade', 'low', 'hack', 'probe', 'inflation', 'rate', 'hike', 'weak', 'sell', 'miss', 'negative', 'plunge', 'loss', 'lawsuit', 'sec', 'sue', 'fined', 'fraud', 'bankrupt', 'ban', 'illegal', 'investigate', 'plummets', 'slips', 'debt']
+    
+    score = 0
+    analyzed_headlines = []
+    
+    for item in news[:6]:
+        title = item.get('title', '').lower()
+        if not title: continue
+        
+        p_count = sum([1 for w in pos_words if w in title])
+        n_count = sum([1 for w in neg_words if w in title])
+        
+        net = p_count - n_count
+        score += net
+        
+        if net > 0: 
+            tag, color = "BULLISH", CHART_THEME['bullish']
+        elif net < 0: 
+            tag, color = "BEARISH", CHART_THEME['bearish']
+        else: 
+            tag, color = "NEUTRAL", CHART_THEME['secondary']
+            
+        analyzed_headlines.append({
+            'title': item.get('title', ''),
+            'publisher': item.get('publisher', 'WIRE'),
+            'tag': tag,
+            'color': color
+        })
+        
+    # Normalize score between -100 and 100
+    max_possible = len(analyzed_headlines) * 2
+    normalized_score = (score / max_possible) * 100 if max_possible > 0 else 0
+    normalized_score = max(-100, min(100, normalized_score))
+    
+    return normalized_score, analyzed_headlines
+
+def render_nlp_sentiment(ticker, is_crypto):
+    st.subheader("NLP NEWS SENTIMENT ENGINE")
+    
+    score, headlines = fetch_news_sentiment(ticker, is_crypto)
+    
+    if score is None:
+        st.warning("No recent news context found.")
+        return
+        
+    gauge_color = CHART_THEME['bullish'] if score > 15 else (CHART_THEME['bearish'] if score < -15 else CHART_THEME['neutral'])
+    
+    fig_gauge = go.Figure(go.Indicator(
+        mode = "gauge+number", value = score, domain = {'x': [0, 1], 'y': [0, 1]}, title = {'text': "Live Media Sentiment"},
+        gauge = {
+            'axis': {'range': [-100, 100]}, 'bar': {'color': gauge_color},
+            'steps': [
+                {'range': [-100, -20], 'color': "rgba(239, 68, 68, 0.2)"},
+                {'range': [-20, 20], 'color': "rgba(255, 255, 255, 0.1)"},
+                {'range': [20, 100], 'color': "rgba(34, 197, 94, 0.2)"}],
+        }
+    ))
+    fig_gauge.update_layout(template=CHART_THEME["template"], height=220, margin=dict(l=20, r=20, t=40, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+    st.plotly_chart(fig_gauge, use_container_width=True)
+
+    st.markdown("<div style='margin-bottom: 10px; color: #94a3b8; font-size: 11px; text-transform: uppercase;'>REAL-TIME HEADLINES SCANNED</div>", unsafe_allow_html=True)
+    
+    for h in headlines:
+        st.markdown(f"""
+            <div class="news-headline" style="border-color: {h['color']};">
+                {h['title']} <br>
+                <span class="news-publisher">[{h['tag']}] • {h['publisher']}</span>
+            </div>
+        """, unsafe_allow_html=True)
+
 
 # ========================= 0. REAL-TIME CHART & VWAP =========================
 def calc_vwap(df, timeframe):
@@ -142,7 +297,7 @@ def calc_vwap(df, timeframe):
     return df
 
 def render_realtime_chart(selected_name, ticker, is_crypto):
-    st.subheader(f"⚡ Real-Time Price Action & Volume Profile")
+    st.subheader(f"MARKET PRICE & VOLUME")
     timeframe = st.radio("Select Timeframe", ["15m", "1h", "4h", "1d"], index=1, horizontal=True, label_visibility="collapsed")
     
     period, interval = ("60d", "15m") if timeframe == "15m" else ("730d", "1h") if timeframe in ["1h", "4h"] else ("2y", "1d")
@@ -163,7 +318,7 @@ def render_realtime_chart(selected_name, ticker, is_crypto):
         colors = [CHART_THEME['bullish'] if row['Close'] >= row['Open'] else CHART_THEME['bearish'] for _, row in data.iterrows()]
         fig.add_trace(go.Bar(x=data.index, y=data['Volume'], name='Volume', marker_color=colors, opacity=0.8), row=2, col=1)
         
-    fig.update_layout(template=CHART_THEME['template'], height=600, xaxis_rangeslider_visible=False, hovermode='x unified')
+    fig.update_layout(template=CHART_THEME['template'], height=500, xaxis_rangeslider_visible=False, hovermode='x unified', margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     if timeframe in ['15m', '1h', '4h']: fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])]) 
     add_watermark(fig)
     st.plotly_chart(fig, use_container_width=True)
@@ -178,7 +333,7 @@ def render_realtime_chart(selected_name, ticker, is_crypto):
 
 # ========================= 1. IVR & IVP =========================
 def render_volatility_metrics(asset_class, ticker, is_crypto):
-    st.markdown("### 1. Implied Volatility Rank (IVR)")
+    st.subheader("1. IMPLIED VOLATILITY RANK")
     vix_name = "India VIX" if asset_class == "Indian Equities" else "Synthetic IV (30D HV)"
     data = get_vix_data(asset_class, ticker, period="1y", is_crypto=is_crypto)
     if data is None: return st.warning(f"{vix_name} data unavailable.")
@@ -188,25 +343,25 @@ def render_volatility_metrics(asset_class, ticker, is_crypto):
     denom = (high_52w - low_52w)
     ivr = ((current_iv - low_52w) / denom * 100) if denom != 0 else 0.0
     ivp = (close[close < current_iv].count() / len(close)) * 100
-    regime = "HIGH VOLATILITY - Net Short Premium" if ivr > 50 else "LOW VOLATILITY - Net Long Premium"
+    regime = "HIGH VOLATILITY" if ivr > 50 else "LOW VOLATILITY"
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=close.index, y=close, mode='lines', name=vix_name, line=dict(color=CHART_THEME["primary"], width=2.5)))
     fig.add_hline(y=high_52w, line_dash="dash", line_color=CHART_THEME["bearish"], annotation_text=f"52W High: {high_52w:.1f}")
     fig.add_hline(y=low_52w, line_dash="dash", line_color=CHART_THEME["bullish"], annotation_text=f"52W Low: {low_52w:.1f}")
     fig.add_hline(y=current_iv, line_color=CHART_THEME["neutral"], line_width=3, annotation_text=f"Current: {current_iv:.1f}")
-    fig.update_layout(template=CHART_THEME["template"], height=400, margin=dict(t=10, b=10))
+    fig.update_layout(template=CHART_THEME["template"], height=300, margin=dict(t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     add_watermark(fig)
     st.plotly_chart(fig, use_container_width=True)
     
     c1, c2, c3 = st.columns(3)
-    c1.metric("IV Rank (IVR)", f"{ivr:.1f}%")
-    c2.metric("IV Percentile (IVP)", f"{ivp:.1f}%")
-    c3.metric("Regime Bias", regime)
+    c1.metric("IV Rank", f"{ivr:.1f}%")
+    c2.metric("IV Percentile", f"{ivp:.1f}%")
+    c3.metric("Regime", regime)
 
 # ========================= 2. Expected Move =========================
 def render_expected_move(selected_name, ticker, asset_class, currency, trading_days, is_crypto):
-    st.markdown("### 2. Expected Move (1σ)")
+    st.subheader("2. EXPECTED MOVE (1σ)")
     asset_data = fetch_data(ticker, period="1mo", is_crypto=is_crypto)
     vix = get_vix_data(asset_class, ticker, period="5d", is_crypto=is_crypto)
     if asset_data is None or vix is None: return st.warning("Data fetch failed for Expected Move.")
@@ -222,18 +377,18 @@ def render_expected_move(selected_name, ticker, asset_class, currency, trading_d
     fig.add_trace(go.Scatter(x=[asset_data.index[-1], tomorrow], y=[spot, spot], mode='lines', name='Spot', line=dict(color=CHART_THEME["neutral"], dash='dash')))
     fig.add_trace(go.Scatter(x=[tomorrow], y=[spot + exp_move], mode='markers', name='+1σ', marker=dict(color=CHART_THEME["bullish"], size=16, symbol='triangle-up')))
     fig.add_trace(go.Scatter(x=[tomorrow], y=[spot - exp_move], mode='markers', name='-1σ', marker=dict(color=CHART_THEME["bearish"], size=16, symbol='triangle-down')))
-    fig.update_layout(template=CHART_THEME["template"], height=400, margin=dict(t=10, b=10))
+    fig.update_layout(template=CHART_THEME["template"], height=300, margin=dict(t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     add_watermark(fig)
     st.plotly_chart(fig, use_container_width=True)
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Spot Price", f"{currency}{spot:,.2f}")
     c2.metric("Vol Benchmark", f"{current_vix:.2f}%")
-    c3.metric("Daily Implied Move", f"± {currency}{exp_move:,.1f}")
+    c3.metric("Implied Move", f"± {currency}{exp_move:,.1f}")
 
 # ========================= 3. Index Divergence =========================
 def render_index_divergence(div1, div2, name1, name2, currency, is_crypto):
-    st.markdown(f"### 3. Systemic Divergence ({name1} vs {name2})")
+    st.subheader(f"3. SYSTEMIC DIVERGENCE ({name1} vs {name2})")
     d1 = fetch_data(div1, period="1y", is_crypto=is_crypto)
     d2 = fetch_data(div2, period="1y", is_crypto=is_crypto)
     if d1 is None or d2 is None: return st.warning("Divergence data unavailable.")
@@ -248,7 +403,7 @@ def render_index_divergence(div1, div2, name1, name2, currency, is_crypto):
     fig.add_trace(go.Scatter(x=normalized.index, y=normalized[name1], name=name1, line=dict(color=CHART_THEME["primary"])), row=1, col=1)
     fig.add_trace(go.Scatter(x=normalized.index, y=normalized[name2], name=name2, line=dict(color=CHART_THEME["secondary"])), row=1, col=1)
     fig.add_trace(go.Scatter(x=rolling_corr.index, y=rolling_corr, name='20D Corr', line=dict(color=CHART_THEME["neutral"])), row=2, col=1)
-    fig.update_layout(template=CHART_THEME["template"], height=450, margin=dict(t=10, b=10))
+    fig.update_layout(template=CHART_THEME["template"], height=350, margin=dict(t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     add_watermark(fig)
     st.plotly_chart(fig, use_container_width=True)
 
@@ -259,7 +414,7 @@ def render_index_divergence(div1, div2, name1, name2, currency, is_crypto):
 
 # ========================= 4. Volatility Cone =========================
 def render_volatility_cone(selected_name, ticker, trading_days, is_crypto):
-    st.markdown("### 4. Volatility Term Structure (Cone)")
+    st.subheader("4. VOLATILITY TERM STRUCTURE (CONE)")
     data = fetch_data(ticker, period="max", is_crypto=is_crypto)
     if data is None: return st.warning("Data unavailable.")
 
@@ -272,13 +427,13 @@ def render_volatility_cone(selected_name, ticker, trading_days, is_crypto):
     fig.add_trace(go.Scatter(x=df_stats['window'], y=df_stats['min'], name='Min Vol', mode='lines+markers', line=dict(color=CHART_THEME["bullish"])))
     fig.add_trace(go.Scatter(x=df_stats['window'], y=df_stats['median'], name='Median Vol', mode='lines+markers', line=dict(color=CHART_THEME["neutral"], dash='dash')))
     fig.add_trace(go.Scatter(x=df_stats['window'], y=df_stats['current'], name='Current Vol', mode='lines+markers', line=dict(color=CHART_THEME["primary"], width=4)))
-    fig.update_layout(template=CHART_THEME["template"], height=400, margin=dict(t=10, b=10))
+    fig.update_layout(template=CHART_THEME["template"], height=300, margin=dict(t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     add_watermark(fig)
     st.plotly_chart(fig, use_container_width=True)
 
 # ========================= 5. Volatility Risk Premium =========================
 def render_vrp(selected_name, ticker, asset_class, trading_days, is_crypto):
-    st.markdown("### 5. Volatility Risk Premium (VRP)")
+    st.subheader("5. VOLATILITY RISK PREMIUM (VRP)")
     main_data = fetch_data(ticker, period="6mo", is_crypto=is_crypto)
     vix = get_vix_data(asset_class, ticker, period="6mo", is_crypto=is_crypto)
     if main_data is None or vix is None: return st.warning("Data unavailable.")
@@ -294,7 +449,7 @@ def render_vrp(selected_name, ticker, asset_class, trading_days, is_crypto):
     fig.add_trace(go.Scatter(x=df.index, y=df['HV'], name='Realized Vol', line=dict(color=CHART_THEME["secondary"])), row=1, col=1)
     colors = np.where(df['VRP'] > 0, CHART_THEME["bullish"], CHART_THEME["bearish"])
     fig.add_trace(go.Bar(x=df.index, y=df['VRP'], name='VRP Spread', marker_color=colors), row=2, col=1)
-    fig.update_layout(template=CHART_THEME["template"], height=450, margin=dict(t=10, b=10))
+    fig.update_layout(template=CHART_THEME["template"], height=350, margin=dict(t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     add_watermark(fig)
     st.plotly_chart(fig, use_container_width=True)
 
@@ -305,7 +460,7 @@ def render_vrp(selected_name, ticker, asset_class, trading_days, is_crypto):
 
 # ========================= 6. Hurst Regime =========================
 def render_hurst_regime(selected_name, ticker, is_crypto):
-    st.markdown("### 6. Hurst Exponent (Regime)")
+    st.subheader("6. HURST EXPONENT (REGIME)")
     data = fetch_data(ticker, period="1y", is_crypto=is_crypto)
     if data is None: return st.warning("Data unavailable.")
 
@@ -324,17 +479,17 @@ def render_hurst_regime(selected_name, ticker, is_crypto):
     fig = make_subplots(rows=2, cols=1, row_heights=[0.65, 0.35], shared_xaxes=True)
     fig.add_trace(go.Scatter(x=df.index, y=df['Close'], name='Price', line=dict(color=CHART_THEME["neutral"])), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['Hurst'], name='Hurst', line=dict(color=CHART_THEME["primary"])), row=2, col=1)
-    fig.update_layout(template=CHART_THEME["template"], height=400, margin=dict(t=10, b=10))
+    fig.update_layout(template=CHART_THEME["template"], height=300, margin=dict(t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     add_watermark(fig)
     st.plotly_chart(fig, use_container_width=True)
 
     c1, c2 = st.columns(2)
     c1.metric("Hurst Value", f"{current_hurst:.3f}")
-    c2.metric("Regime Classification", regime)
+    c2.metric("Regime", regime)
 
 # ========================= 7. Liquidity Sweeps =========================
 def render_liquidity_sweep(selected_name, ticker, is_crypto):
-    st.markdown("### 7. Intraday Liquidity Sweeps (15m)")
+    st.subheader("7. INTRADAY LIQUIDITY SWEEPS (15M)")
     data = fetch_data(ticker, period="30d", interval="15m", is_crypto=is_crypto)
     if data is None: return st.warning("Intraday data lookup failed.")
 
@@ -350,7 +505,7 @@ def render_liquidity_sweep(selected_name, ticker, is_crypto):
     if not supply_idx.empty: fig.add_trace(go.Scatter(x=supply_idx, y=plot_df.loc[supply_idx, 'High']*1.002, mode='markers', marker=dict(symbol='triangle-down', size=14, color=CHART_THEME["bearish"]), name='Supply Trap'))
     if not demand_idx.empty: fig.add_trace(go.Scatter(x=demand_idx, y=plot_df.loc[demand_idx, 'Low']*0.998, mode='markers', marker=dict(symbol='triangle-up', size=14, color=CHART_THEME["bullish"]), name='Demand Trap'))
     
-    fig.update_layout(template=CHART_THEME["template"], height=450, xaxis_rangeslider_visible=False, margin=dict(t=10, b=10))
+    fig.update_layout(template=CHART_THEME["template"], height=300, xaxis_rangeslider_visible=False, margin=dict(t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     add_watermark(fig)
     st.plotly_chart(fig, use_container_width=True)
 
@@ -359,7 +514,7 @@ def render_liquidity_sweep(selected_name, ticker, is_crypto):
 
 # ========================= 8. Advanced Volatility =========================
 def render_advanced_volatility(selected_name, ticker, trading_days, is_crypto):
-    st.markdown("### 8. Yang-Zhang Volatility (Overnight + Intraday)")
+    st.subheader("8. YANG-ZHANG VOLATILITY")
     data = fetch_data(ticker, period="1y", is_crypto=is_crypto)
     if data is None: return st.warning("Data unavailable.")
 
@@ -372,16 +527,16 @@ def render_advanced_volatility(selected_name, ticker, trading_days, is_crypto):
     yz_vol = np.sqrt(vol_o + k * vol_c + (1 - k) * vol_rs) * np.sqrt(trading_days) * 100
     c2c_vol = np.log(c / c.shift(1)).std() * np.sqrt(trading_days) * 100
     
-    st.caption("Yang-Zhang is superior as it mathematically accounts for overnight gap risk and intraday trend that traditional standard deviation misses.")
+    st.caption("Captures overnight gap risk & intraday trend mathematically.")
     
     c1, c2, c3 = st.columns(3)
     c1.metric("Yang-Zhang True Volatility", f"{yz_vol:.2f}%")
-    c2.metric("Basic Close-to-Close Vol", f"{c2c_vol:.2f}%")
+    c2.metric("Close-to-Close Vol", f"{c2c_vol:.2f}%")
     c3.metric("Hidden Gap Risk", f"{yz_vol - c2c_vol:+.2f}%", delta_color="inverse")
 
 # ========================= 9. Market Synthesis =========================
 def render_market_synthesis(selected_name, ticker, asset_class, div1, div2, div1_name, div2_name, currency, trading_days, is_crypto):
-    st.subheader(f"🧠 9. Multi-Timeframe Market Synthesis")
+    st.subheader(f"9. MULTI-TIMEFRAME MARKET SYNTHESIS")
     
     with concurrent.futures.ThreadPoolExecutor() as executor:
         f_vix = executor.submit(get_vix_data, asset_class, ticker, "6mo", is_crypto)
@@ -394,16 +549,13 @@ def render_market_synthesis(selected_name, ticker, asset_class, div1, div2, div1
 
     if any(d is None for d in [vix_data, daily_data, intra_data, d1_data, d2_data]): return st.warning("Synthesis data incomplete.")
 
-    # Volatility Metrics
     current_vix = get_scalar(vix_data['Close'])
     ivr = ((current_vix - get_scalar(vix_data['Close'].min())) / (get_scalar(vix_data['Close'].max()) - get_scalar(vix_data['Close'].min())) * 100) if (get_scalar(vix_data['Close'].max()) - get_scalar(vix_data['Close'].min())) != 0 else 0
     vrp_val = current_vix - (np.log(daily_data['Close'] / daily_data['Close'].shift(1)).rolling(20).std() * np.sqrt(trading_days) * 100).iloc[-1]
     
-    # Correlation
     data_div = pd.merge(d1_data['Close'].to_frame('A'), d2_data['Close'].to_frame('B'), left_index=True, right_index=True).dropna()
     corr_val = float(np.log(data_div / data_div.shift(1)).dropna()['A'].rolling(20).corr(np.log(data_div / data_div.shift(1)).dropna()['B']).iloc[-1])
 
-    # Hurst Exponent
     log_prices = np.log(daily_data['Close'])
     def calc_h(ts):
         if len(ts) < 20: return np.nan
@@ -413,15 +565,13 @@ def render_market_synthesis(selected_name, ticker, asset_class, div1, div2, div1
     hurst_val = float(hurst_series.iloc[-1]) if not hurst_series.empty else 0.5
     hurst_regime = "MEAN REVERTING" if hurst_val < 0.45 else ("TRENDING" if hurst_val > 0.55 else "RANDOM WALK")
 
-    # Liquidity
     df_liq = intra_data.copy()
     df_liq['Prev_High'] = df_liq['High'].rolling(20).max().shift(1)
     df_liq['Prev_Low'] = df_liq['Low'].rolling(20).min().shift(1)
     df_liq['Supply_Sweep'] = (df_liq['High'] > df_liq['Prev_High']) & (df_liq['Close'] < df_liq['Prev_High'])
     df_liq['Demand_Sweep'] = (df_liq['Low'] < df_liq['Prev_Low']) & (df_liq['Close'] > df_liq['Prev_Low'])
-    liq_regime = "SUPPLY SWEEP (Resistance)" if df_liq['Supply_Sweep'].iloc[-1] else ("DEMAND SWEEP (Support)" if df_liq['Demand_Sweep'].iloc[-1] else "PRICE DISCOVERY")
+    liq_regime = "SUPPLY SWEEP" if df_liq['Supply_Sweep'].iloc[-1] else ("DEMAND SWEEP" if df_liq['Demand_Sweep'].iloc[-1] else "PRICE DISCOVERY")
 
-    # Synthesis Logic
     bias = 0 
     if hurst_regime == "TRENDING": bias += 1
     if hurst_regime == "MEAN REVERTING": bias -= 1
@@ -429,67 +579,43 @@ def render_market_synthesis(selected_name, ticker, asset_class, div1, div2, div1
     if "SUPPLY" in liq_regime: bias -= 1
     if corr_val < 0.50: bias -= 1
     
-    macro_state = "Bullish / Trending Focus" if bias > 0 else ("Bearish / Mean Reversion Focus" if bias < 0 else "Neutral / Choppy")
-    option_strategy = "Net Short Premium (Credit Spreads/Iron Condors)" if ivr > 50 and vrp_val > 0 else "Net Long Premium (Debit Spreads/Directional)"
+    macro_state = "BULLISH / TRENDING" if bias > 0 else ("BEARISH / REVERSION" if bias < 0 else "NEUTRAL / CHOPPY")
+    option_strategy = "NET SHORT PREMIUM" if ivr > 50 and vrp_val > 0 else "NET LONG PREMIUM"
 
-    st.info(f"**Actionable Insight:** The market is currently in a **{macro_state}** state. Based on implied vs. realized volatility pricing, the optimal options approach favors **{option_strategy}**.")
-
-    st.markdown("### 📊 Market Variables Matrix")
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.markdown("**1. Volatility & Pricing**")
+        st.markdown("**1. VOLATILITY & PRICING**")
         st.metric("IV Rank", f"{ivr:.1f}%", "High Premium" if ivr > 50 else "Low Premium", delta_color="inverse")
         st.metric("VRP Edge", f"{vrp_val:+.2f}%", "Sellers Edge" if vrp_val > 0 else "Buyers Edge", delta_color="normal")
     with c2:
-        st.markdown("**2. Market Behavior**")
+        st.markdown("**2. MARKET BEHAVIOR**")
         st.metric("Hurst Exponent", f"{hurst_val:.3f}", hurst_regime, delta_color="off")
         st.metric("Intraday Liquidity", "Latest Bias", liq_regime, delta_color="off")
     with c3:
-        st.markdown("**3. Systemic Risk**")
+        st.markdown("**3. SYSTEMIC RISK**")
         st.metric(f"{div1_name}/{div2_name} Corr", f"{corr_val:.2f}", "SEVERE DIVERGENCE" if corr_val < 0.5 else "HIGH CORRELATION", delta_color="inverse" if corr_val < 0.50 else "normal")
 
-    # Radar Chart
     categories = ['IV Rank', 'Trend (Hurst)', 'Correlation', 'VRP Premium']
     norm_ivr = min(ivr / 100, 1.0)
     norm_hurst = min(hurst_val, 1.0)
     norm_corr = max(0, min(corr_val, 1.0))
     norm_vrp = max(0, min((vrp_val + 5) / 10, 1.0)) 
 
-    fig_radar = go.Figure(data=go.Scatterpolar(r=[norm_ivr, norm_hurst, norm_corr, norm_vrp], theta=categories, fill='toself', line=dict(color=CHART_THEME["primary"])))
-    fig_radar.update_layout(polar=dict(radialaxis=dict(visible=False, range=[0, 1])), showlegend=False, template=CHART_THEME["template"], title="Current Regime Profile (Normalized)", height=400)
-    add_watermark(fig_radar)
-    st.plotly_chart(fig_radar, use_container_width=True)
+    colA, colB = st.columns([1, 2])
+    with colA:
+        fig_radar = go.Figure(data=go.Scatterpolar(r=[norm_ivr, norm_hurst, norm_corr, norm_vrp], theta=categories, fill='toself', line=dict(color=CHART_THEME["primary"])))
+        fig_radar.update_layout(polar=dict(radialaxis=dict(visible=False, range=[0, 1])), showlegend=False, template=CHART_THEME["template"], title="REGIME PROFILE", height=300, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=20, r=20, t=30, b=20))
+        add_watermark(fig_radar)
+        st.plotly_chart(fig_radar, use_container_width=True)
 
-    # Dynamic Text Generator
-    st.markdown("### 📝 AI Daily Market Analysis")
-    
-    div_text = f"The {div1_name} and {div2_name} are moving together, confirming the broader trend." if corr_val > 0.5 else f"The {div2_name} is acting independently from {div1_name}, breaking systemic correlation. This historically leads to choppy, unpredictable price action."
-    vix_name = "India VIX" if asset_class == "Indian Equities" else "Synthetic Volatility Index"
-    
-    vol_text = f"The {vix_name} is currently sitting at {current_vix:.2f}, placing the Volatility Rank (IVR) at {ivr:.1f}%. "
-    if vrp_val > 0:
-        vol_text += f"Because the Volatility benchmark is higher than short-term Realized Volatility, the Volatility Risk Premium (VRP) is positive (+{vrp_val:.2f}%). The market is overpricing risk, giving sellers a mathematical edge."
-    else:
-        vol_text += f"Because short-term Realized Volatility is actually higher than the Volatility benchmark, the Volatility Risk Premium (VRP) is negative ({vrp_val:.2f}%). The market is fundamentally underpricing risk, making options/leverage cheap for buyers."
-
-    hurst_text = f"The Hurst Exponent is registering at {hurst_val:.3f}, indicating a {hurst_regime} regime. "
-    if hurst_regime == "TRENDING": hurst_text += "Breakouts are likely to succeed; you should follow the momentum."
-    elif hurst_regime == "MEAN REVERTING": hurst_text += "Breakouts are highly likely to fail; you should be fading the extremes at support/resistance levels."
-    else: hurst_text += "The market is currently a random walk; wait for clearer structural signals."
-
-    sweep_text = f"Intraday micro-structure shows a {liq_regime}. "
-    if "SUPPLY" in liq_regime: sweep_text += "Institutional 'smart money' is actively selling into rallies and trapping retail breakout buyers at the highs."
-    elif "DEMAND" in liq_regime: sweep_text += "Institutional 'smart money' is actively absorbing panic selling at the lows to drive the market up."
-    else: sweep_text += "No major institutional liquidity traps have been triggered in the immediate short-term."
-
-    st.info(f"""
-    **Systemic Risk:** The {div1_name}/{div2_name} correlation is currently {corr_val:.2f}. {div_text}\n
-    **Volatility & Pricing:** {vol_text}\n
-    **Market Behavior:** {hurst_text}\n
-    **Intraday Flow:** {sweep_text}\n
-    **Conclusion:** Combining these factors, the overarching quantitative bias is **{macro_state}**, and the optimal mathematical approach to derivatives today is **{option_strategy}**.
-    """)
-
+    with colB:
+        st.markdown("### AI DAILY MARKET ANALYSIS")
+        st.info(f"""
+        **Systemic Risk:** Correlation is {corr_val:.2f}. {"Assets confirm the broader trend." if corr_val > 0.5 else "Assets are acting independently, breaking systemic correlation."}\n
+        **Volatility:** IVR is {ivr:.1f}%. VRP is {vrp_val:+.2f}%. {"Market is overpricing risk, giving sellers an edge." if vrp_val > 0 else "Market is underpricing risk, making options cheap for buyers."}\n
+        **Behavior:** Hurst is {hurst_val:.3f} ({hurst_regime}). {"Follow momentum breakouts." if hurst_regime == "TRENDING" else "Fade extremes at support/resistance."}\n
+        **Conclusion:** Quantitative bias is **{macro_state}**. Optimal options approach is **{option_strategy}**.
+        """)
 
 # ========================= 10. FULL OPTION GREEKS ENGINE =========================
 def bs_greeks(S, K, T_days, r_pct, sigma_pct):
@@ -518,7 +644,7 @@ def bs_greeks(S, K, T_days, r_pct, sigma_pct):
     }
 
 def render_options_greeks(selected_name, ticker, asset_class, is_crypto):
-    st.subheader(f"🧪 10. Advanced Options Pricing & Greeks")
+    st.subheader(f"10. ADVANCED OPTIONS PRICING & GREEKS")
     asset_data = fetch_data(ticker, period="5d", is_crypto=is_crypto)
     vix = get_vix_data(asset_class, ticker, period="5d", is_crypto=is_crypto)
     if asset_data is None: return st.warning("Spot price data unavailable.")
@@ -527,7 +653,6 @@ def render_options_greeks(selected_name, ticker, asset_class, is_crypto):
     live_iv = get_scalar(vix['Close']) if vix is not None else 30.0
     default_rate = 7.0 if asset_class == "Indian Equities" else 5.0
 
-    st.markdown("### 🎛️ Simulation Parameters")
     c1, c2, c3, c4 = st.columns(4)
     with c1: spot = st.number_input("Spot Price", value=float(live_spot), step=10.0)
     with c2: strike = st.number_input("Strike Price (K)", value=float(round(live_spot/100)*100), step=100.0)
@@ -535,8 +660,6 @@ def render_options_greeks(selected_name, ticker, asset_class, is_crypto):
     with c4: iv = st.number_input("Implied Volatility (%)", value=float(live_iv), step=1.0)
 
     greeks = bs_greeks(spot, strike, dte, default_rate, iv)
-    
-    st.markdown(f"### 📊 Black-Scholes Output | Strike: **{strike:,.2f}** | DTE: **{dte}**")
     
     c1, c2 = st.columns(2)
     def render_greek_card(title, data, color):
@@ -549,60 +672,28 @@ def render_options_greeks(selected_name, ticker, asset_class, is_crypto):
         rc4.metric("Theta (Time Decay)", f"{data['Theta']:.2f} / day")
         rc5.metric("Vega (Vol Sensitivity)", f"{data['Vega']:.4f}")
         rc6.metric("Rho (Rate Sensitivity)", f"{data['Rho']:.4f}")
-        st.markdown("<br>", unsafe_allow_html=True)
         
     with c1: render_greek_card("CALL OPTION", greeks['Call'], CHART_THEME["bullish"])
     with c2: render_greek_card("PUT OPTION", greeks['Put'], CHART_THEME["bearish"])
 
     # --- DYNAMIC QUANT RISK INTERPRETATION ---
-    st.markdown("### 🧠 AI Options Analytics & Risk Breakdown")
-    
+    st.markdown("### AI OPTIONS ANALYTICS & RISK BREAKDOWN")
     pct_from_strike = ((spot - strike) / strike) * 100
-    call_delta = greeks['Call']['Delta']
-    put_delta = greeks['Put']['Delta']
-    gamma_val = greeks['Call']['Gamma']
-    theta_call = greeks['Call']['Theta']
-    vega_val = greeks['Call']['Vega']
     
-    if abs(pct_from_strike) < 1.0:
-        moneyness_status = "At-The-Money (ATM)"
-        moneyness_desc = "The spot price is sitting directly on the strike. This is the zone of maximum uncertainty, where premium value is purely extrinsic time value, and structural risk metrics fluctuate at their most aggressive rates."
-    elif spot > strike:
-        moneyness_status = "Call is In-The-Money (ITM) / Put is Out-of-the-Money (OTM)"
-        moneyness_desc = f"The underlying spot price is trading **{abs(pct_from_strike):.2f}% above** the strike selection. The Call option possesses intrinsic value, while the Put option is purely extrinsic paper value waiting to expire worthless if conditions hold."
-    else:
-        moneyness_status = "Call is Out-of-the-Money (OTM) / Put is In-The-Money (ITM)"
-        moneyness_desc = f"The underlying spot price is trading **{abs(pct_from_strike):.2f}% below** the strike selection. The Put option possesses intrinsic value, while the Call option relies entirely on speculative extrinsic value."
-
-    prob_call_itm = call_delta * 100
-    prob_put_itm = abs(put_delta) * 100
-    delta_text = f"The **Call Delta ({call_delta:.4f})** indicates that for every 1-point gain in {selected_name}, the Call premium will theoretically gain {call_delta:.2f} points. Mechanically, the market assigns an estimated **{prob_call_itm:.1f}% theoretical probability** of this Call expiring in-the-money."
-
-    if dte <= 7 and abs(pct_from_strike) < 2.0:
-        gamma_text = f"**CRITICAL GAMMA RISK:** Gamma is highly concentrated at **{gamma_val:.6f}**. Because the option is close to expiration ({dte} DTE) and near-the-money, the Deltas will swing violently with minor price moves."
-    else:
-        gamma_text = f"**STABLE GAMMA PROFILE:** Gamma is measured at a mild **{gamma_val:.6f}**. Delta adjustments will remain gradual and predictable, minimizing the risk of rapid delta-flips."
-
-    call_decay_pct = (abs(theta_call) / greeks['Call']['Price'] * 100) if greeks['Call']['Price'] > 0 else 0
-    if dte <= 5:
-        theta_text = f"**EXPONENTIAL TIME DECAY:** The Call option is shedding **{abs(theta_call):.2f} points per day**, roughly **{call_decay_pct:.1f}%** of its total value every 24 hours. The clock is a weapon for option sellers right now."
-    else:
-        theta_text = f"**LINEAR TIME DECAY:** Theta decay is functioning linearly at **{abs(theta_call):.2f} points per day**."
-
-    implied_move_impact = vega_val * 1.0
-    vega_text = f"**VOLATILITY SENSITIVITY:** Vega stands at **{vega_val:.4f}**. If structural marketplace volatility drops by a mere 1% (Vol Crush), the contract values will automatically contract by **{implied_move_impact:.2f} points**."
+    if abs(pct_from_strike) < 1.0: moneyness_status, moneyness_desc = "At-The-Money (ATM)", "The spot price is sitting directly on the strike."
+    elif spot > strike: moneyness_status, moneyness_desc = "Call ITM / Put OTM", f"Spot is trading **{abs(pct_from_strike):.2f}% above** the strike."
+    else: moneyness_status, moneyness_desc = "Call OTM / Put ITM", f"Spot is trading **{abs(pct_from_strike):.2f}% below** the strike."
 
     st.info(f"""
-    🌐 **Moneyness Matrix:** This option cluster is currently **{moneyness_status}**. {moneyness_desc}  
-    🎯 **Direction & Probability (Delta):** {delta_text}  
-    ⚡ **Acceleration Risk (Gamma):** {gamma_text}  
-    ⏳ **The Clock (Theta):** {theta_text}  
-    🌊 **Implied Risk Pricing (Vega):** {vega_text}
+    🌐 **Moneyness Matrix:** {moneyness_status}. {moneyness_desc}  
+    🎯 **Direction (Delta):** Call assigns **{greeks['Call']['Delta']*100:.1f}% theoretical probability** of expiring ITM.  
+    ⚡ **Acceleration (Gamma):** {"CRITICAL GAMMA RISK" if (dte <= 7 and abs(pct_from_strike) < 2.0) else "STABLE GAMMA PROFILE"}.  
+    ⏳ **The Clock (Theta):** Call sheds **{abs(greeks['Call']['Theta']):.2f} pts/day**.  
+    🌊 **Vol Risk (Vega):** A 1% Vol Crush drops contract value by **{greeks['Call']['Vega']:.2f} pts**.
     """)
 
-    # --- EXPOSURE CURVES & VOLATILITY SURFACE ---
-    st.markdown("### 📈 Exposure Curves & Volatility Surface")
-    col_curve, col_surf = st.columns(2)
+    # --- EXPOSURE CURVES ---
+    st.markdown("### OPTION DELTA EXPOSURE CURVE")
     
     spot_range = np.linspace(spot * 0.85, spot * 1.15, 100)
     call_deltas = [bs_greeks(s, strike, dte, default_rate, iv)['Call']['Delta'] for s in spot_range]
@@ -613,39 +704,25 @@ def render_options_greeks(selected_name, ticker, asset_class, is_crypto):
     fig_delta.add_trace(go.Scatter(x=spot_range, y=put_deltas, name='Put Delta', line=dict(color=CHART_THEME['bearish'], width=3)))
     fig_delta.add_vline(x=spot, line_dash="dash", line_color=CHART_THEME['neutral'], annotation_text="Current Spot")
     fig_delta.add_vline(x=strike, line_dash="dot", line_color=CHART_THEME['secondary'], annotation_text="Strike Price")
-    fig_delta.update_layout(title="Option Delta Exposure Curve", template=CHART_THEME['template'], height=450, hovermode='x unified', margin=dict(l=10, r=10, t=40, b=10))
+    fig_delta.update_layout(title="Option Delta Exposure Curve", template=CHART_THEME['template'], height=350, hovermode='x unified', margin=dict(l=10, r=10, t=40, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     add_watermark(fig_delta)
-    with col_curve:
-        st.plotly_chart(fig_delta, use_container_width=True)
+    st.plotly_chart(fig_delta, use_container_width=True)
 
-    strikes_grid = np.linspace(spot * 0.8, spot * 1.2, 30)
-    dtes_grid = np.array([7, 14, 30, 60, 90, 120, 180, 252, 365])
-    K_mesh, T_mesh = np.meshgrid(strikes_grid, dtes_grid)
-    moneyness = K_mesh / spot
-    simulated_iv_surface = iv + (iv * 2.0) * (moneyness - 1)**2 - (iv * 0.5) * (moneyness - 1) + (10 / np.sqrt(T_mesh))
-    
-    fig_surface = go.Figure(data=[go.Surface(z=simulated_iv_surface, x=K_mesh, y=T_mesh, colorscale='Inferno')])
-    fig_surface.update_layout(title='3D Implied Volatility Surface (Simulated)', scene=dict(xaxis_title='Strike Price', yaxis_title='Days to Expiry', zaxis_title='Implied Volatility (%)', camera=dict(eye=dict(x=1.5, y=1.5, z=0.5))), template=CHART_THEME['template'], height=450, margin=dict(l=10, r=10, t=40, b=10))
-    add_watermark(fig_surface)
-    with col_surf:
-        st.plotly_chart(fig_surface, use_container_width=True)
 
 # ========================= 11. ML ENGINE =========================
 def render_ml_engine(ticker, is_crypto):
-    st.subheader(f"🤖 11. Machine Learning Predictive Engine")
-    st.caption("Training an isolated Random Forest Classifier on the fly using engineered features.")
+    st.subheader(f"AI PREDICTIVE ENGINE")
+    st.caption("Training isolated Random Forest on engineered features.")
     
     df = fetch_data(ticker, period="2y", interval="1d", is_crypto=is_crypto)
     if df is None or len(df) < 50: return st.warning("Insufficient data for ML.")
     
-    # 1. Feature Engineering
     df['Log_Returns'] = np.log(df['Close'] / df['Close'].shift(1))
     df['Vol_20D'] = df['Log_Returns'].rolling(20).std() * np.sqrt(252)
     df['Momentum_10D'] = df['Close'] - df['Close'].shift(10)
     df['SMA_20_Dist'] = (df['Close'] / df['Close'].rolling(20).mean()) - 1
     df['RSI_14'] = calculate_rsi(df['Close'], 14)
     
-    # 2. Target Variable
     df['Target'] = np.where(df['Close'].shift(-1) > df['Close'], 1, 0)
     ml_data = df.dropna().copy()
     
@@ -653,13 +730,11 @@ def render_ml_engine(ticker, is_crypto):
     X = ml_data[features].iloc[:-1]
     y = ml_data['Target'].iloc[:-1]
     
-    # 3. Model Training
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42, class_weight='balanced')
     model.fit(X_scaled, y)
     
-    # 4. Live Prediction
     live_data = ml_data[features].iloc[[-1]]
     live_scaled = scaler.transform(live_data)
     
@@ -670,55 +745,33 @@ def render_ml_engine(ticker, is_crypto):
 
     c1, c2, c3 = st.columns(3)
     c1.metric("ML Model Bias", prediction)
-    c2.metric("Probability of Up-Day", f"{prob_bullish:.1f}%")
-    c3.metric("Probability of Down-Day", f"{prob_bearish:.1f}%")
+    c2.metric("Up-Day Prob", f"{prob_bullish:.1f}%")
+    c3.metric("Down-Day Prob", f"{prob_bearish:.1f}%")
 
-    st.markdown("---")
     col1, col2 = st.columns([1, 1])
-    
     with col1:
-        st.markdown(f"### <span style='color:{color}'>Engine Output: {prediction}</span>", unsafe_allow_html=True)
-        if prob_bullish > 60:
-            st.write("The Random Forest model detects strong historical convergence indicating an upward drift tomorrow. Momentum and localized volatility profiles match past bullish regimes.")
-        elif prob_bearish > 60:
-            st.write("The model identifies significant breakdown signatures. The combination of current RSI and distance from the mean historically precedes further selling pressure.")
-        else:
-            st.write("The model considers the current regime highly ambiguous (near 50/50). The mathematical edge is virtually non-existent for directional swing trading right now.")
-            
         fig_gauge = go.Figure(go.Indicator(
-            mode = "gauge+number",
-            value = prob_bullish,
-            domain = {'x': [0, 1], 'y': [0, 1]},
-            title = {'text': "Bullish Probability (%)"},
+            mode = "gauge+number", value = prob_bullish, domain = {'x': [0, 1], 'y': [0, 1]}, title = {'text': "Bullish Prob (%)"},
             gauge = {
-                'axis': {'range': [0, 100]},
-                'bar': {'color': CHART_THEME["primary"]},
+                'axis': {'range': [0, 100]}, 'bar': {'color': CHART_THEME["primary"]},
                 'steps': [
                     {'range': [0, 45], 'color': "rgba(239, 68, 68, 0.3)"},
                     {'range': [45, 55], 'color': "rgba(255, 255, 255, 0.1)"},
                     {'range': [55, 100], 'color': "rgba(34, 197, 94, 0.3)"}],
             }
         ))
-        fig_gauge.update_layout(template=CHART_THEME["template"], height=300, margin=dict(l=20, r=20, t=50, b=20))
+        fig_gauge.update_layout(template=CHART_THEME["template"], height=250, margin=dict(l=20, r=20, t=50, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
         st.plotly_chart(fig_gauge, use_container_width=True)
 
     with col2:
         importances = model.feature_importances_
         feat_imp_df = pd.DataFrame({'Feature': features, 'Importance': importances}).sort_values(by='Importance', ascending=True)
-        
-        fig_imp = go.Figure(go.Bar(
-            x=feat_imp_df['Importance'], y=feat_imp_df['Feature'], orientation='h',
-            marker_color=CHART_THEME["secondary"]
-        ))
-        fig_imp.update_layout(
-            title="What is driving the AI's decision today?",
-            template=CHART_THEME["template"], height=400,
-            xaxis_title="Relative Weight in Decision Trees"
-        )
+        fig_imp = go.Figure(go.Bar(x=feat_imp_df['Importance'], y=feat_imp_df['Feature'], orientation='h', marker_color=CHART_THEME["secondary"]))
+        fig_imp.update_layout(title="Feature Importance", template=CHART_THEME["template"], height=250, xaxis_title="Weight", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10, r=10, t=40, b=10))
         add_watermark(fig_imp)
         st.plotly_chart(fig_imp, use_container_width=True)
 
-# ========================= MAIN DASHBOARD APP =========================
+# ========================= ALADDIN UI ROUTER =========================
 def main():
     with st.sidebar:
         st.title("🎛️ Terminal Settings")
@@ -734,52 +787,85 @@ def main():
             
         selected_name = st.selectbox("Target Asset", options=list(ASSET_DICT.keys()), index=0)
         ticker = ASSET_DICT[selected_name]
+
+    # Header Section
+    col_h1, col_h2 = st.columns([4, 1])
+    col_h1.title(f"ALADDIN // QUANT TERMINAL // {selected_name.upper()}")
+    with col_h2:
+        aladdin_metric("SYSTEM STATUS", "ONLINE", "OPTIMIZED")
+
+    with st.spinner("Initializing complete Aladdin quantitative matrix..."):
         
-        st.divider()
-        st.caption("AlphaQuant Master Terminal v10.1")
-        st.caption("Mode: Single-Page View")
+        # ROW 0: Macro Pulse (New)
+        with st.container(border=True):
+            render_macro_pulse()
+        
+        # Grid Layout - Row 1 (Realtime & NLP)
+        tab_row1_c1, tab_row1_c2 = st.columns([2, 1])
+        
+        with tab_row1_c1:
+            with st.container(border=True):
+                render_realtime_chart(selected_name, ticker, is_crypto)
+            
+        with tab_row1_c2:
+            with st.container(border=True):
+                render_nlp_sentiment(ticker, is_crypto)
 
-    st.title(f"AlphaQuant Terminal: {selected_name}")
-    st.markdown("All analytical modules are actively rendering on this single unified view. Scroll down to analyze.")
-    st.markdown("<hr>", unsafe_allow_html=True)
+        # Grid Layout - Row 2 (ML Engine & Market Synthesis)
+        tab_row2_c1, tab_row2_c2 = st.columns([1, 2])
+        
+        with tab_row2_c1:
+            with st.container(border=True):
+                render_ml_engine(ticker, is_crypto)
+                
+        with tab_row2_c2:
+            with st.container(border=True):
+                render_market_synthesis(selected_name, ticker, asset_class, div1, div2, div1_name, div2_name, currency, trading_days, is_crypto)
 
-    with st.spinner("Initializing complete quantitative matrix..."):
-        # ROW 1: Real-Time
-        render_realtime_chart(selected_name, ticker, is_crypto)
-        st.markdown("<hr>", unsafe_allow_html=True)
+        # Grid Layout - Row 3 (Options Pricing)
+        with st.container(border=True):
+            render_options_greeks(selected_name, ticker, asset_class, is_crypto)
 
-        # ROW 2: ML & Synthesis
-        render_ml_engine(ticker, is_crypto)
-        st.markdown("<br>", unsafe_allow_html=True)
-        render_market_synthesis(selected_name, ticker, asset_class, div1, div2, div1_name, div2_name, currency, trading_days, is_crypto)
-        st.markdown("<hr>", unsafe_allow_html=True)
+        # Secondary Grid - Row 4 (Divergence & VRP)
+        col_row4_1, col_row4_2 = st.columns(2)
+        
+        with col_row4_1:
+            with st.container(border=True):
+                render_index_divergence(div1, div2, div1_name, div2_name, currency, is_crypto)
+            
+        with col_row4_2:
+            with st.container(border=True):
+                render_vrp(selected_name, ticker, asset_class, trading_days, is_crypto)
 
-        # ROW 3: Options
-        render_options_greeks(selected_name, ticker, asset_class, is_crypto)
-        st.markdown("<hr>", unsafe_allow_html=True)
+        # Secondary Grid - Row 5 (Volatility & Expected Move & Cone)
+        col_row5_1, col_row5_2, col_row5_3 = st.columns(3)
+        
+        with col_row5_1:
+            with st.container(border=True):
+                render_volatility_metrics(asset_class, ticker, is_crypto)
+            
+        with col_row5_2:
+            with st.container(border=True):
+                render_expected_move(selected_name, ticker, asset_class, currency, trading_days, is_crypto)
+            
+        with col_row5_3:
+            with st.container(border=True):
+                render_volatility_cone(selected_name, ticker, trading_days, is_crypto)
 
-        # ROW 4: Divergence & VRP (Full Width)
-        render_index_divergence(div1, div2, div1_name, div2_name, currency, is_crypto)
-        st.markdown("<br>", unsafe_allow_html=True)
-        render_vrp(selected_name, ticker, asset_class, trading_days, is_crypto)
-        st.markdown("<hr>", unsafe_allow_html=True)
-
-        # ROW 5: IVR & Expected Move (Side-by-Side)
-        col1, col2 = st.columns(2)
-        with col1: render_volatility_metrics(asset_class, ticker, is_crypto)
-        with col2: render_expected_move(selected_name, ticker, asset_class, currency, trading_days, is_crypto)
-        st.markdown("<hr>", unsafe_allow_html=True)
-
-        # ROW 6: Hurst & Vol Cone (Side-by-Side)
-        col3, col4 = st.columns(2)
-        with col3: render_hurst_regime(selected_name, ticker, is_crypto)
-        with col4: render_volatility_cone(selected_name, ticker, trading_days, is_crypto)
-        st.markdown("<hr>", unsafe_allow_html=True)
-
-        # ROW 7: Liquidity & YZ (Full Width)
-        render_liquidity_sweep(selected_name, ticker, is_crypto)
-        st.markdown("<br>", unsafe_allow_html=True)
-        render_advanced_volatility(selected_name, ticker, trading_days, is_crypto)
+        # Secondary Grid - Row 6 (Hurst, Liquidity, YZ Vol)
+        col_row6_1, col_row6_2, col_row6_3 = st.columns([1, 2, 1])
+        
+        with col_row6_1:
+            with st.container(border=True):
+                render_hurst_regime(selected_name, ticker, is_crypto)
+            
+        with col_row6_2:
+            with st.container(border=True):
+                render_liquidity_sweep(selected_name, ticker, is_crypto)
+            
+        with col_row6_3:
+            with st.container(border=True):
+                render_advanced_volatility(selected_name, ticker, trading_days, is_crypto)
 
 if __name__ == "__main__":
     main()
