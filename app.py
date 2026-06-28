@@ -133,7 +133,6 @@ CRYPTO_ASSETS = {
 
 # ============================== HELPERS ==============================
 def markdown_to_html(text: str) -> str:
-    """Convert **text** markdown bold to <strong> HTML tags with cyan color."""
     return re.sub(r'\*\*(.*?)\*\*', r'<strong style="color:#67e8f9;font-weight:700;">\1</strong>', text)
 
 def calculate_rsi(data: pd.Series, periods: int = 14) -> pd.Series:
@@ -158,7 +157,7 @@ def safe_get_scalar(series: Union[pd.Series, float, int, None], default: float =
 
 def add_watermark(fig: go.Figure) -> None:
     fig.add_annotation(
-        text="ALADDIN QUANT TERMINAL v21.0",
+        text="ALADDIN QUANT TERMINAL v22.0",
         xref="paper", yref="paper", x=0.99, y=0.01,
         showarrow=False, font=dict(size=9, color=CHART_THEME["watermark"]), opacity=0.5
     )
@@ -169,18 +168,6 @@ def section_header(number: str, title: str, icon: str = "◈") -> None:
             <span class="section-num">{number}</span>
             <span class="section-icon">{icon}</span>
             <span class="section-title">{title}</span>
-        </div>
-    """, unsafe_allow_html=True)
-
-def aladdin_metric(label: str, value: str, delta: Optional[str] = None, invert_color: bool = False) -> None:
-    if delta:
-        color = ("#ef4444" if "+" in delta else "#22c55e") if invert_color else ("#22c55e" if "+" in delta else "#ef4444")
-    else:
-        color = "#67e8f9"
-    st.markdown(f"""
-        <div class="module-card">
-            <div class="metric-label">{label}</div>
-            <div class="metric-value">{value} {f'<span style="color:{color};font-size:14px;">({delta})</span>' if delta else ''}</div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -198,7 +185,6 @@ def _fetch_data_internal(ticker: str, period: str, interval: str, is_crypto: boo
     elif interval in ['1h', '4h'] and period in ['max', '5y', '10y', '2y']: period = '730d'
 
     data = yf.download(ticker, period=period, interval=interval, progress=False)
-
     if (data is None or data.empty) and interval == "15m":
         data = yf.download(ticker, period="5d", interval=interval, progress=False)
 
@@ -206,7 +192,6 @@ def _fetch_data_internal(ticker: str, period: str, interval: str, is_crypto: boo
 
     if isinstance(data.columns, pd.MultiIndex):
         data.columns = [col[0] for col in data.columns]
-
     if data.index.tz is not None:
         data.index = data.index.tz_localize(None)
 
@@ -250,25 +235,165 @@ def get_vix_data(asset_class: str, ticker: str, period: str = "1y", is_crypto: b
         vix_df['Close'] = synth_vix
         return vix_df.dropna().tail(365 if period == "1y" else 180)
 
+# ============================== EXECUTIVE MARKET SUMMARY ==============================
+def render_executive_summary(
+    selected_name: str, ticker: str, asset_class: str,
+    div1: str, div2: str, div1_name: str, div2_name: str,
+    currency: str, trading_days: int, is_crypto: bool
+) -> None:
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        f_vix = executor.submit(get_vix_data, asset_class, ticker, "6mo", is_crypto)
+        f_daily = executor.submit(fetch_data, ticker, "1y", "1d", is_crypto)
+        f_div1 = executor.submit(fetch_data, div1, "1y", "1d", is_crypto)
+        f_div2 = executor.submit(fetch_data, div2, "1y", "1d", is_crypto)
+        vix_data_summ, daily_data_summ, d1_data_summ, d2_data_summ = (
+            f_vix.result(), f_daily.result(), f_div1.result(), f_div2.result()
+        )
+
+    if any(d is None for d in [vix_data_summ, daily_data_summ, d1_data_summ, d2_data_summ]):
+        st.warning("Synthesis data incomplete.")
+        return
+
+    current_vix = safe_get_scalar(vix_data_summ['Close'])
+    vix_min = safe_get_scalar(vix_data_summ['Close'].min())
+    vix_max = safe_get_scalar(vix_data_summ['Close'].max())
+    ivr = ((current_vix - vix_min) / (vix_max - vix_min) * 100) if (vix_max - vix_min) != 0 else 0.0
+
+    hv_20 = np.log(daily_data_summ['Close'] / daily_data_summ['Close'].shift(1)).rolling(20).std() * np.sqrt(trading_days) * 100
+    vrp_val = current_vix - safe_get_scalar(hv_20)
+
+    data_div = pd.merge(
+        d1_data_summ['Close'].to_frame('A'), d2_data_summ['Close'].to_frame('B'),
+        left_index=True, right_index=True, how='outer'
+    ).ffill().dropna()
+    
+    if data_div.empty:
+        corr_val = 0.5
+    else:
+        corr_val = safe_get_scalar(
+            np.log(data_div / data_div.shift(1)).dropna()['A']
+            .rolling(20).corr(np.log(data_div / data_div.shift(1)).dropna()['B']).dropna(),
+            default=0.5
+        )
+
+    df_metrics = daily_data_summ.copy()
+    df_metrics['EMA_89'] = df_metrics['Close'].ewm(span=89, adjust=False).mean()
+    df_metrics['EMA_21'] = df_metrics['Close'].ewm(span=21, adjust=False).mean()
+    df_metrics['RSI'] = calculate_rsi(df_metrics['Close'], 14)
+
+    last_close = safe_get_scalar(df_metrics['Close'])
+    last_ema89 = safe_get_scalar(df_metrics['EMA_89'])
+    last_ema21 = safe_get_scalar(df_metrics['EMA_21'])
+    last_rsi = safe_get_scalar(df_metrics['RSI'])
+
+    if last_close > last_ema89 and last_ema89 > last_ema21:
+        trend_narrative = f"exhibiting an active **Bullish Expansion Structure**. Spot is comfortably elevated above both the momentum 89-period EMA ({currency}{last_ema89:,.2f}) and the intermediate 21-period EMA ({currency}{last_ema21:,.2f}), confirming sustainable upward velocity across timeframes."
+        trend_signal, trend_color = "BULLISH EXPANSION", CHART_THEME['bullish']
+    elif last_close < last_ema89 and last_ema89 < last_ema21:
+        trend_narrative = f"stuck in a strong **Bearish Markdown Sequence**. Price action remains structurally pinned beneath the descending 89-period EMA ({currency}{last_ema89:,.2f}) and 21-period EMA ({currency}{last_ema21:,.2f}), alerting option buyers to step carefully."
+        trend_signal, trend_color = "BEARISH MARKDOWN", CHART_THEME['bearish']
+    else:
+        trend_narrative = f"experiencing a **Mean Reversion / Consolidation Phase**. Spot pricing is weaving through its 89-period and 21-period EMAs, showing range containment ahead of any directional breakout."
+        trend_signal, trend_color = "CONSOLIDATION", CHART_THEME['secondary']
+
+    if last_rsi > 70:
+        rsi_narrative = f"The 14-period RSI reads **{last_rsi:.1f}** — **overbought** territory, flagging momentum exhaustion risk."
+        rsi_signal, rsi_color = "OVERBOUGHT", CHART_THEME['bearish']
+    elif last_rsi < 30:
+        rsi_narrative = f"The 14-period RSI sits at a washed-out **{last_rsi:.1f}**, signalling **seller capitulation** and potential reversal setups."
+        rsi_signal, rsi_color = "OVERSOLD", CHART_THEME['bullish']
+    else:
+        rsi_narrative = f"The 14-period RSI is balanced at **{last_rsi:.1f}**, providing clean runway for linear expansions in either direction."
+        rsi_signal, rsi_color = "NEUTRAL", CHART_THEME['primary']
+
+    if vrp_val > 0:
+        vol_narrative = f"Implied parameters are **overpricing** realized movements (VRP: **{vrp_val:+.2f}%**, IVR: **{ivr:.1f}%**). Structural edge favours **premium sellers** — **credit spreads**, **covered writes**, or **short straddles**."
+        vol_signal, vol_color = "SELL PREMIUM", CHART_THEME['secondary']
+    else:
+        vol_narrative = f"Implied vol is **underpricing** historical risk (VRP: **{vrp_val:+.2f}%**, IVR: **{ivr:.1f}%**). Options premium is cheap — structural advantage for **directional buyers** and **long gamma** strategies."
+        vol_signal, vol_color = "BUY OPTIONS", CHART_THEME['primary']
+
+    corr_text = "**Unified macro-driven capital flows** confirm high index-wide systematic risk." if corr_val > 0.5 else "**Fragmented, independent asset movement** — diversification is currently effective."
+
+    # Radar Chart & Summary Layout
+    norm_ivr = min(ivr / 100, 1.0)
+    norm_corr = max(0, min(corr_val, 1.0))
+    norm_vrp = max(0, min((vrp_val + 5) / 10, 1.0))
+    categories = ['IV Rank', 'Correlation', 'VRP Premium']
+
+    col_radar, col_summary = st.columns([1, 2.5])
+    
+    with col_radar:
+        fig_radar = go.Figure(data=go.Scatterpolar(
+            r=[norm_ivr, norm_corr, norm_vrp, norm_ivr],
+            theta=categories + [categories[0]],
+            fill='toself',
+            fillcolor='rgba(103,232,249,0.08)',
+            line=dict(color=CHART_THEME["primary"], width=2)
+        ))
+        fig_radar.update_layout(
+            polar=dict(
+                bgcolor='rgba(0,0,0,0)',
+                radialaxis=dict(visible=False, range=[0, 1]),
+                angularaxis=dict(gridcolor='rgba(255,255,255,0.06)', tickfont=dict(size=10, color='#94a3b8'))
+            ),
+            showlegend=False,
+            template=CHART_THEME["template"],
+            title=dict(text="REGIME PROFILE", font=dict(size=10, color='#64748b'), x=0.5),
+            height=220,
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=20, r=20, t=30, b=10)
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
+
+    with col_summary:
+        st.markdown(f"""
+            <div class="exec-summary-card" style="margin-top: 0px;">
+                <div class="exec-summary-header">
+                    <span class="exec-dot"></span>
+                    EXECUTIVE MARKET SUMMARY — {selected_name.upper()}
+                </div>
+                <div class="exec-grid">
+                    <div class="exec-block">
+                        <div class="exec-block-label">PRICE MOMENTUM STRUCTURE</div>
+                        <div class="exec-signal" style="color:{trend_color};">{trend_signal}</div>
+                        <div class="exec-block-text">{markdown_to_html(trend_narrative)}</div>
+                        <div class="exec-sub" style="color:{rsi_color};">RSI STATUS: {rsi_signal}</div>
+                        <div class="exec-block-text">{markdown_to_html(rsi_narrative)}</div>
+                    </div>
+                    <div class="exec-block">
+                        <div class="exec-block-label">VOLATILITY & OPTIONS STRATEGY</div>
+                        <div class="exec-signal" style="color:{vol_color};">{vol_signal}</div>
+                        <div class="exec-block-text">{markdown_to_html(vol_narrative)}</div>
+                    </div>
+                    <div class="exec-block">
+                        <div class="exec-block-label">INTERMARKET CORRELATION</div>
+                        <div class="exec-signal" style="color:{'#22c55e' if corr_val > 0.5 else '#67e8f9'};">
+                            {div1_name} / {div2_name}: {corr_val:.3f}
+                        </div>
+                        <div class="exec-block-text">{markdown_to_html(corr_text)}</div>
+                    </div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+
 # ============================== NLP NEWS SENTIMENT ENGINE ==============================
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_news_sentiment(ticker: str, is_crypto: bool) -> Tuple[Optional[float], Optional[float], List[Dict]]:
     news = []
-
-    # 1. YFinance Ticker Data
     try:
         tkr = yf.Ticker(ticker)
         news = tkr.news
     except Exception: pass
 
-    # 2. YFinance Search
     if not news or not isinstance(news, list) or len(news) == 0:
         try:
             search_res = yf.Search(ticker, news_count=8)
             news = search_res.news
         except Exception: pass
 
-    # 3. Google News RSS
     if not news or not isinstance(news, list) or len(news) == 0:
         try:
             clean_ticker = ticker.replace('^', '').replace('.NS', '')
@@ -379,115 +504,6 @@ def render_nlp_sentiment(ticker: str, is_crypto: bool) -> None:
             </div>
         """, unsafe_allow_html=True)
 
-# ============================== EXECUTIVE MARKET SUMMARY ==============================
-def render_executive_summary(
-    selected_name: str, ticker: str, asset_class: str,
-    div1: str, div2: str, div1_name: str, div2_name: str,
-    currency: str, trading_days: int, is_crypto: bool
-) -> None:
-    # Parallel data fetch
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        f_vix = executor.submit(get_vix_data, asset_class, ticker, "6mo", is_crypto)
-        f_daily = executor.submit(fetch_data, ticker, "1y", "1d", is_crypto)
-        f_div1 = executor.submit(fetch_data, div1, "1y", "1d", is_crypto)
-        f_div2 = executor.submit(fetch_data, div2, "1y", "1d", is_crypto)
-        vix_data, daily_data, d1_data, d2_data = (
-            f_vix.result(), f_daily.result(), f_div1.result(), f_div2.result()
-        )
-
-    if any(d is None for d in [vix_data, daily_data, d1_data, d2_data]):
-        st.warning("Synthesis data incomplete.")
-        return
-
-    # Metric calculations
-    current_vix = safe_get_scalar(vix_data['Close'])
-    vix_min = safe_get_scalar(vix_data['Close'].min())
-    vix_max = safe_get_scalar(vix_data['Close'].max())
-    ivr = ((current_vix - vix_min) / (vix_max - vix_min) * 100) if (vix_max - vix_min) != 0 else 0.0
-
-    hv_20 = np.log(daily_data['Close'] / daily_data['Close'].shift(1)).rolling(20).std() * np.sqrt(trading_days) * 100
-    vrp_val = current_vix - safe_get_scalar(hv_20)
-
-    data_div = pd.merge(
-        d1_data['Close'].to_frame('A'), d2_data['Close'].to_frame('B'),
-        left_index=True, right_index=True, how='outer'
-    ).ffill().dropna()
-    corr_val = safe_get_scalar(
-        np.log(data_div / data_div.shift(1)).dropna()['A']
-        .rolling(20).corr(np.log(data_div / data_div.shift(1)).dropna()['B']).dropna(),
-        default=0.5
-    )
-
-    # EMA 89 & EMA 21 Narrative Build
-    df_metrics = daily_data.copy()
-    df_metrics['EMA_89'] = df_metrics['Close'].ewm(span=89, adjust=False).mean()
-    df_metrics['EMA_21'] = df_metrics['Close'].ewm(span=21, adjust=False).mean()
-    df_metrics['RSI'] = calculate_rsi(df_metrics['Close'], 14)
-
-    last_close = safe_get_scalar(df_metrics['Close'])
-    last_ema89 = safe_get_scalar(df_metrics['EMA_89'])
-    last_ema21 = safe_get_scalar(df_metrics['EMA_21'])
-    last_rsi = safe_get_scalar(df_metrics['RSI'])
-
-    if last_close > last_ema89 and last_ema89 > last_ema21:
-        trend_narrative = f"exhibiting an active **Bullish Expansion Structure**. Spot is comfortably elevated above both the momentum 89-period EMA ({currency}{last_ema89:,.2f}) and the intermediate 21-period EMA ({currency}{last_ema21:,.2f}), confirming sustainable upward velocity across timeframes."
-        trend_signal, trend_color = "BULLISH EXPANSION", CHART_THEME['bullish']
-    elif last_close < last_ema89 and last_ema89 < last_ema21:
-        trend_narrative = f"stuck in a strong **Bearish Markdown Sequence**. Price action remains structurally pinned beneath the descending 89-period EMA ({currency}{last_ema89:,.2f}) and 21-period EMA ({currency}{last_ema21:,.2f}), alerting option buyers to step carefully."
-        trend_signal, trend_color = "BEARISH MARKDOWN", CHART_THEME['bearish']
-    else:
-        trend_narrative = f"experiencing a **Mean Reversion / Consolidation Phase**. Spot pricing is weaving through its 89-period and 21-period EMAs, showing range containment ahead of any directional breakout."
-        trend_signal, trend_color = "CONSOLIDATION", CHART_THEME['secondary']
-
-    if last_rsi > 70:
-        rsi_narrative = f"The 14-period RSI reads **{last_rsi:.1f}** — **overbought** territory, flagging momentum exhaustion risk."
-        rsi_signal, rsi_color = "OVERBOUGHT", CHART_THEME['bearish']
-    elif last_rsi < 30:
-        rsi_narrative = f"The 14-period RSI sits at a washed-out **{last_rsi:.1f}**, signalling **seller capitulation** and potential reversal setups."
-        rsi_signal, rsi_color = "OVERSOLD", CHART_THEME['bullish']
-    else:
-        rsi_narrative = f"The 14-period RSI is balanced at **{last_rsi:.1f}**, providing clean runway for linear expansions in either direction."
-        rsi_signal, rsi_color = "NEUTRAL", CHART_THEME['primary']
-
-    if vrp_val > 0:
-        vol_narrative = f"Implied parameters are **overpricing** realized movements (VRP: **{vrp_val:+.2f}%**, IVR: **{ivr:.1f}%**). Structural edge favours **premium sellers** — **credit spreads**, **covered writes**, or **short straddles**."
-        vol_signal, vol_color = "SELL PREMIUM", CHART_THEME['secondary']
-    else:
-        vol_narrative = f"Implied vol is **underpricing** historical risk (VRP: **{vrp_val:+.2f}%**, IVR: **{ivr:.1f}%**). Options premium is cheap — structural advantage for **directional buyers** and **long gamma** strategies."
-        vol_signal, vol_color = "BUY OPTIONS", CHART_THEME['primary']
-
-    corr_text = "**Unified macro-driven capital flows** confirm high index-wide systematic risk." if corr_val > 0.5 else "**Fragmented, independent asset movement** — diversification is currently effective."
-
-    # EXACT HTML string with NO BLANK LINES inside elements to prevent Streamlit <p> tag injection
-    st.markdown(f"""
-        <div class="exec-summary-card">
-            <div class="exec-summary-header">
-                <span class="exec-dot"></span>
-                EXECUTIVE MARKET SUMMARY — {selected_name.upper()}
-            </div>
-            <div class="exec-grid">
-                <div class="exec-block">
-                    <div class="exec-block-label">PRICE MOMENTUM STRUCTURE</div>
-                    <div class="exec-signal" style="color:{trend_color};">{trend_signal}</div>
-                    <div class="exec-block-text">{markdown_to_html(trend_narrative)}</div>
-                    <div class="exec-sub" style="color:{rsi_color};">RSI STATUS: {rsi_signal}</div>
-                    <div class="exec-block-text">{markdown_to_html(rsi_narrative)}</div>
-                </div>
-                <div class="exec-block">
-                    <div class="exec-block-label">VOLATILITY & OPTIONS STRATEGY</div>
-                    <div class="exec-signal" style="color:{vol_color};">{vol_signal}</div>
-                    <div class="exec-block-text">{markdown_to_html(vol_narrative)}</div>
-                </div>
-                <div class="exec-block">
-                    <div class="exec-block-label">INTERMARKET CORRELATION</div>
-                    <div class="exec-signal" style="color:{'#22c55e' if corr_val > 0.5 else '#67e8f9'};">
-                        {div1_name} / {div2_name}: {corr_val:.3f}
-                    </div>
-                    <div class="exec-block-text">{markdown_to_html(corr_text)}</div>
-                </div>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
 
 # ============================== REALTIME CHART: EMA 89 & 21 ==============================
 def render_realtime_chart(selected_name: str, ticker: str, is_crypto: bool) -> None:
@@ -632,6 +648,7 @@ def render_realtime_chart(selected_name: str, ticker: str, is_crypto: bool) -> N
     last_demand = safe_get_scalar(data['Demand_Sweep'])
     regime = "SUPPLY SWEEP" if last_supply else ("DEMAND SWEEP" if last_demand else "DISCOVERY")
     c4.metric("Micro-Regime", regime)
+
 
 # ============================== VOLATILITY & SYSTEMIC METRICS ==============================
 def render_volatility_metrics(asset_class: str, ticker: str, is_crypto: bool) -> None:
@@ -932,6 +949,83 @@ def render_advanced_volatility(selected_name: str, ticker: str, trading_days: in
     c2.metric("Close-to-Close Vol", f"{c2c_vol:.2f}%")
     c3.metric("Hidden Gap Risk", f"{gap_risk:+.2f}%", delta_color="inverse")
 
+def render_microstructure(ticker: str, is_crypto: bool) -> None:
+    section_header("8", "MARKET MICROSTRUCTURE & ORDER FLOW (INTRADAY)", "◈")
+    data = fetch_data(ticker, period="30d", interval="1h", is_crypto=is_crypto)
+    if data is None or data.empty or 'Volume' not in data.columns:
+        st.warning("Intraday volume data required for microstructure analysis is unavailable.")
+        return
+        
+    df = data.copy()
+    epsilon = 1e-8
+    
+    # 1. Kyle's Lambda
+    df['Log_Ret'] = np.log(df['Close'] / df['Close'].shift(1)).abs()
+    df['Lambda'] = df['Log_Ret'] / (df['Volume'] + epsilon)
+    df['Lambda_Smooth'] = df['Lambda'].rolling(24).median()
+    
+    curr_lambda = safe_get_scalar(df['Lambda_Smooth'])
+    lambda_min = df['Lambda_Smooth'].min()
+    lambda_max = df['Lambda_Smooth'].max()
+    lambda_rank = ((curr_lambda - lambda_min) / (lambda_max - lambda_min + epsilon)) * 100
+    
+    # 2. VPIN Proxy
+    range_hl = df['High'] - df['Low']
+    buy_pct = np.where(range_hl > 0, (df['Close'] - df['Low']) / range_hl, 0.5)
+    df['Buy_Vol'] = df['Volume'] * buy_pct
+    df['Sell_Vol'] = df['Volume'] - df['Buy_Vol']
+    df['Roll_Buy'] = df['Buy_Vol'].rolling(24).sum()
+    df['Roll_Sell'] = df['Sell_Vol'].rolling(24).sum()
+    df['Roll_Vol'] = df['Volume'].rolling(24).sum()
+    df['VPIN'] = abs(df['Roll_Buy'] - df['Roll_Sell']) / (df['Roll_Vol'] + epsilon) * 100
+    curr_vpin = safe_get_scalar(df['VPIN'])
+    
+    # 3. Shannon Entropy
+    def calc_entropy(series):
+        if len(series) < 10: return np.nan
+        hist, _ = np.histogram(series, bins=10, density=False)
+        p = hist / np.sum(hist)
+        p = p[p > 0]
+        return -np.sum(p * np.log2(p))
+        
+    df['Returns'] = data['Close'].pct_change()
+    df['Entropy'] = df['Returns'].rolling(48).apply(calc_entropy)
+    
+    curr_entropy = safe_get_scalar(df['Entropy'])
+    entropy_norm = (curr_entropy / 3.3219) * 100 if curr_entropy else 0.0
+
+    lambda_color = CHART_THEME['bearish'] if lambda_rank > 70 else (CHART_THEME['bullish'] if lambda_rank < 30 else CHART_THEME['secondary'])
+    lambda_state = "BRITTLE (High Slippage)" if lambda_rank > 70 else ("LIQUID (Low Slippage)" if lambda_rank < 30 else "NORMAL")
+    
+    vpin_color = CHART_THEME['bearish'] if curr_vpin > 40 else CHART_THEME['bullish']
+    vpin_state = "TOXIC (Smart Money Active)" if curr_vpin > 40 else "BALANCED (Retail Flow)"
+    
+    ent_color = CHART_THEME['primary'] if entropy_norm < 70 else CHART_THEME['bearish']
+    ent_state = "PREDICTABLE (Structured)" if entropy_norm < 70 else "CHAOTIC (Random Walk)"
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown(f'''
+        <div class="module-card">
+            <div class="metric-label">Kyle\'s Lambda Rank</div>
+            <div class="metric-value">{lambda_rank:.1f}%</div>
+            <div style="color:{lambda_color};font-size:11px;font-weight:700;margin-top:4px;">{lambda_state}</div>
+        </div>''', unsafe_allow_html=True)
+    with c2:
+        st.markdown(f'''
+        <div class="module-card">
+            <div class="metric-label">VPIN (Toxicity)</div>
+            <div class="metric-value">{curr_vpin:.1f}%</div>
+            <div style="color:{vpin_color};font-size:11px;font-weight:700;margin-top:4px;">{vpin_state}</div>
+        </div>''', unsafe_allow_html=True)
+    with c3:
+        st.markdown(f'''
+        <div class="module-card">
+            <div class="metric-label">Shannon Entropy</div>
+            <div class="metric-value">{entropy_norm:.1f}%</div>
+            <div style="color:{ent_color};font-size:11px;font-weight:700;margin-top:4px;">{ent_state}</div>
+        </div>''', unsafe_allow_html=True)
+
 # ============================== ML ENGINE ==============================
 @st.cache_resource(ttl=3600, show_spinner=False)
 def train_and_validate_ml_model(ticker: str, is_crypto: bool):
@@ -990,7 +1084,7 @@ def train_and_validate_ml_model(ticker: str, is_crypto: bool):
     return model_full, scaler_full, features, metrics
 
 def render_ml_engine(ticker: str, is_crypto: bool) -> None:
-    section_header("8", "AI PREDICTIVE ENGINE (XGBoost + Purged CV)", "◈")
+    section_header("9", "AI PREDICTIVE ENGINE (XGBoost + Purged CV)", "◈")
     model_full, scaler_full, features, metrics = train_and_validate_ml_model(ticker, is_crypto)
     if model_full is None:
         st.warning("Insufficient data to train ML model.")
@@ -1077,7 +1171,7 @@ def render_ml_engine(ticker: str, is_crypto: bool) -> None:
 
 # ============================== PORTFOLIO RISK & OPTIONS GREEKS ==============================
 def render_portfolio_risk(is_crypto: bool, currency: str) -> None:
-    section_header("9", "MULTI-ASSET PORTFOLIO STRESS TEST (Risk Parity & Hist VaR)", "◈")
+    section_header("10", "MULTI-ASSET PORTFOLIO STRESS TEST (Risk Parity & Hist VaR)", "◈")
     basket = list(CRYPTO_ASSETS.values()) if is_crypto else list(INDIAN_ASSETS.values())[:3]
     basket_names = list(CRYPTO_ASSETS.keys()) if is_crypto else list(INDIAN_ASSETS.keys())[:3]
 
@@ -1134,7 +1228,7 @@ def bs_greeks_advanced(S: float, K: float, T_days: int, r_pct: float, sigma_pct:
     }
 
 def render_options_greeks(selected_name: str, ticker: str, asset_class: str, is_crypto: bool) -> None:
-    section_header("10", "OPTIONS PRICING ENGINE (Merton Extension)", "◈")
+    section_header("11", "OPTIONS PRICING ENGINE (Merton Extension)", "◈")
     asset_data = fetch_data(ticker, period="5d", is_crypto=is_crypto)
     vix = get_vix_data(asset_class, ticker, period="5d", is_crypto=is_crypto)
     tnx_data = fetch_data("^TNX", period="5d", is_crypto=False)
@@ -1531,7 +1625,7 @@ def main() -> None:
 
     # SIDEBAR
     with st.sidebar:
-        st.title("⚡ ALADDIN v21.0")
+        st.title("⚡ ALADDIN v22.0")
 
         sync_col1, sync_col2 = st.columns([3, 1])
         with sync_col1:
@@ -1562,7 +1656,7 @@ def main() -> None:
 
         st.divider()
         st.markdown(
-            '<div style="font-family:JetBrains Mono;font-size:9px;color:#1e3a5f;text-align:center;letter-spacing:1px;">EMA 89 · EMA 21 · VWAP · RSI(14)<br>YANG-ZHANG · HURST · VRP<br>XGBOOST ML · BLACK-SCHOLES</div>',
+            '<div style="font-family:JetBrains Mono;font-size:9px;color:#1e3a5f;text-align:center;letter-spacing:1px;">EMA 89 · EMA 21 · VWAP · RSI(14)<br>YANG-ZHANG · HURST · VRP<br>VPIN · XGBOOST ML · BLACK-SCHOLES</div>',
             unsafe_allow_html=True
         )
 
@@ -1590,111 +1684,15 @@ def main() -> None:
 
     with st.spinner("Initialising Aladdin quantitative matrix…"):
         
-        # --- EXECUTIVE SUMMARY ENGINE ---
-        # Extracted directly after header to read the whole market context
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            f_vix = executor.submit(get_vix_data, asset_class, ticker, "6mo", is_crypto)
-            f_daily = executor.submit(fetch_data, ticker, "1y", "1d", is_crypto)
-            f_div1 = executor.submit(fetch_data, div1, "1y", "1d", is_crypto)
-            f_div2 = executor.submit(fetch_data, div2, "1y", "1d", is_crypto)
-            vix_data_summ, daily_data_summ, d1_data_summ, d2_data_summ = (
-                f_vix.result(), f_daily.result(), f_div1.result(), f_div2.result()
-            )
+        # ROW 0: EXECUTIVE SUMMARY
+        safe_render(
+            render_executive_summary,
+            selected_name, ticker, asset_class,
+            div1, div2, div1_name, div2_name,
+            currency, trading_days, is_crypto
+        )
 
-        if not any(d is None for d in [vix_data_summ, daily_data_summ, d1_data_summ, d2_data_summ]):
-            
-            # Synthesize Data for Executive Summary
-            current_vix = safe_get_scalar(vix_data_summ['Close'])
-            vix_min = safe_get_scalar(vix_data_summ['Close'].min())
-            vix_max = safe_get_scalar(vix_data_summ['Close'].max())
-            ivr = ((current_vix - vix_min) / (vix_max - vix_min) * 100) if (vix_max - vix_min) != 0 else 0.0
-            hv_20 = np.log(daily_data_summ['Close'] / daily_data_summ['Close'].shift(1)).rolling(20).std() * np.sqrt(trading_days) * 100
-            vrp_val = current_vix - safe_get_scalar(hv_20)
-            data_div = pd.merge(
-                d1_data_summ['Close'].to_frame('A'), d2_data_summ['Close'].to_frame('B'),
-                left_index=True, right_index=True, how='outer'
-            ).ffill().dropna()
-            corr_val = safe_get_scalar(
-                np.log(data_div / data_div.shift(1)).dropna()['A']
-                .rolling(20).corr(np.log(data_div / data_div.shift(1)).dropna()['B']).dropna(),
-                default=0.5
-            )
-
-            df_metrics = daily_data_summ.copy()
-            df_metrics['EMA_89'] = df_metrics['Close'].ewm(span=89, adjust=False).mean()
-            df_metrics['EMA_21'] = df_metrics['Close'].ewm(span=21, adjust=False).mean()
-            df_metrics['RSI'] = calculate_rsi(df_metrics['Close'], 14)
-
-            last_close = safe_get_scalar(df_metrics['Close'])
-            last_ema89 = safe_get_scalar(df_metrics['EMA_89'])
-            last_ema21 = safe_get_scalar(df_metrics['EMA_21'])
-            last_rsi = safe_get_scalar(df_metrics['RSI'])
-
-            # NARRATIVE GENERATION
-            if last_close > last_ema89 and last_ema89 > last_ema21:
-                trend_narrative = f"exhibiting an active **Bullish Expansion Structure**. Spot is comfortably elevated above both the momentum 89-period EMA ({currency}{last_ema89:,.2f}) and the intermediate 21-period EMA ({currency}{last_ema21:,.2f}), confirming sustainable upward velocity across timeframes."
-                trend_signal, trend_color = "BULLISH EXPANSION", CHART_THEME['bullish']
-            elif last_close < last_ema89 and last_ema89 < last_ema21:
-                trend_narrative = f"stuck in a strong **Bearish Markdown Sequence**. Price action remains structurally pinned beneath the descending 89-period EMA ({currency}{last_ema89:,.2f}) and 21-period EMA ({currency}{last_ema21:,.2f}), alerting option buyers to step carefully."
-                trend_signal, trend_color = "BEARISH MARKDOWN", CHART_THEME['bearish']
-            else:
-                trend_narrative = f"experiencing a **Mean Reversion / Consolidation Phase**. Spot pricing is weaving through its 89-period and 21-period EMAs, showing range containment ahead of any directional breakout."
-                trend_signal, trend_color = "CONSOLIDATION", CHART_THEME['secondary']
-
-            if last_rsi > 70:
-                rsi_narrative = f"The 14-period RSI reads **{last_rsi:.1f}** — **overbought** territory, flagging momentum exhaustion risk."
-                rsi_signal, rsi_color = "OVERBOUGHT", CHART_THEME['bearish']
-            elif last_rsi < 30:
-                rsi_narrative = f"The 14-period RSI sits at a washed-out **{last_rsi:.1f}**, signalling **seller capitulation** and potential reversal setups."
-                rsi_signal, rsi_color = "OVERSOLD", CHART_THEME['bullish']
-            else:
-                rsi_narrative = f"The 14-period RSI is balanced at **{last_rsi:.1f}**, providing clean runway for linear expansions in either direction."
-                rsi_signal, rsi_color = "NEUTRAL", CHART_THEME['primary']
-
-            if vrp_val > 0:
-                vol_narrative = f"Implied parameters are **overpricing** realized movements (VRP: **{vrp_val:+.2f}%**, IVR: **{ivr:.1f}%**). Structural edge favours **premium sellers** — **credit spreads**, **covered writes**, or **short straddles**."
-                vol_signal, vol_color = "SELL PREMIUM", CHART_THEME['secondary']
-            else:
-                vol_narrative = f"Implied vol is **underpricing** historical risk (VRP: **{vrp_val:+.2f}%**, IVR: **{ivr:.1f}%**). Options premium is cheap — structural advantage for **directional buyers** and **long gamma** strategies."
-                vol_signal, vol_color = "BUY OPTIONS", CHART_THEME['primary']
-
-            corr_text = "**Unified macro-driven capital flows** confirm high index-wide systematic risk." if corr_val > 0.5 else "**Fragmented, independent asset movement** — diversification is currently effective."
-
-            # EXECUTIVE SUMMARY UI (Zero blank lines inside f-string for HTML safety)
-            st.markdown(f"""
-                <div class="exec-summary-card">
-                    <div class="exec-summary-header">
-                        <span class="exec-dot"></span>
-                        EXECUTIVE MARKET SUMMARY — {selected_name.upper()}
-                    </div>
-                    <div class="exec-grid">
-                        <div class="exec-block">
-                            <div class="exec-block-label">PRICE MOMENTUM STRUCTURE</div>
-                            <div class="exec-signal" style="color:{trend_color};">{trend_signal}</div>
-                            <div class="exec-block-text">{markdown_to_html(trend_narrative)}</div>
-                            <div class="exec-sub" style="color:{rsi_color};">RSI STATUS: {rsi_signal}</div>
-                            <div class="exec-block-text">{markdown_to_html(rsi_narrative)}</div>
-                        </div>
-                        <div class="exec-block">
-                            <div class="exec-block-label">VOLATILITY & OPTIONS STRATEGY</div>
-                            <div class="exec-signal" style="color:{vol_color};">{vol_signal}</div>
-                            <div class="exec-block-text">{markdown_to_html(vol_narrative)}</div>
-                        </div>
-                        <div class="exec-block">
-                            <div class="exec-block-label">INTERMARKET CORRELATION</div>
-                            <div class="exec-signal" style="color:{'#22c55e' if corr_val > 0.5 else '#67e8f9'};">
-                                {div1_name} / {div2_name}: {corr_val:.3f}
-                            </div>
-                            <div class="exec-block-text">{markdown_to_html(corr_text)}</div>
-                        </div>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-            st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-
-
-        # --- LAYOUT GRID ---
-        # Row 1
+        # ROW 1: REALTIME CHART & NLP
         tab_row1_c1, tab_row1_c2 = st.columns([2, 1])
         with tab_row1_c1:
             with st.container(border=True):
@@ -1703,7 +1701,7 @@ def main() -> None:
             with st.container(border=True):
                 safe_render(render_nlp_sentiment, ticker, is_crypto)
 
-        # Row 2
+        # ROW 2: IV RANK, EXPECTED MOVE, DIVERGENCE
         col_row2_1, col_row2_2, col_row2_3 = st.columns(3)
         with col_row2_1:
             with st.container(border=True):
@@ -1715,7 +1713,7 @@ def main() -> None:
             with st.container(border=True):
                 safe_render(render_index_divergence, div1, div2, div1_name, div2_name, currency, is_crypto)
 
-        # Row 3
+        # ROW 3: VOL CONE & VRP
         col_row3_1, col_row3_2 = st.columns(2)
         with col_row3_1:
             with st.container(border=True):
@@ -1724,7 +1722,7 @@ def main() -> None:
             with st.container(border=True):
                 safe_render(render_vrp, selected_name, ticker, asset_class, trading_days, is_crypto)
 
-        # Row 4
+        # ROW 4: HURST & YANG-ZHANG
         col_row4_1, col_row4_2 = st.columns(2)
         with col_row4_1:
             with st.container(border=True):
@@ -1733,15 +1731,19 @@ def main() -> None:
             with st.container(border=True):
                 safe_render(render_advanced_volatility, selected_name, ticker, trading_days, is_crypto)
 
-        # Row 5 — ML Engine
+        # ROW 5: MICROSTRUCTURE
+        with st.container(border=True):
+            safe_render(render_microstructure, ticker, is_crypto)
+
+        # ROW 6: ML ENGINE
         with st.container(border=True):
             safe_render(render_ml_engine, ticker, is_crypto)
 
-        # Row 6 — Portfolio Risk
+        # ROW 7: PORTFOLIO RISK
         with st.container(border=True):
             safe_render(render_portfolio_risk, is_crypto, currency)
 
-        # Row 7 — Options Greeks
+        # ROW 8: OPTIONS GREEKS
         with st.container(border=True):
             safe_render(render_options_greeks, selected_name, ticker, asset_class, is_crypto)
 
@@ -1751,8 +1753,8 @@ def main() -> None:
                         border-top:1px solid #0f1e35;
                         font-family:'JetBrains Mono',monospace;
                         font-size:9px;color:#1e3a5f;letter-spacing:2px;">
-                ALADDIN QUANT TERMINAL v21.0 &nbsp;·&nbsp; EMA(89,21) &nbsp;·&nbsp; YANG-ZHANG &nbsp;·&nbsp;
-                HURST &nbsp;·&nbsp; VRP &nbsp;·&nbsp; XGBOOST ML &nbsp;·&nbsp; MERTON B-S &nbsp;·&nbsp;
+                ALADDIN QUANT TERMINAL v22.0 &nbsp;·&nbsp; EMA(89,21) &nbsp;·&nbsp; YANG-ZHANG &nbsp;·&nbsp;
+                HURST &nbsp;·&nbsp; VRP &nbsp;·&nbsp; VPIN &nbsp;·&nbsp; XGBOOST ML &nbsp;·&nbsp; MERTON B-S<br>
                 FOR EDUCATIONAL PURPOSES ONLY — NOT FINANCIAL ADVICE
             </div>
         """, unsafe_allow_html=True)
