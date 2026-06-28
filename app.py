@@ -22,6 +22,8 @@ from textblob import TextBlob
 import logging
 import yaml
 import os
+import urllib.parse
+import xml.etree.ElementTree as ET
 from typing import Optional, Tuple, List, Dict, Any, Union, Callable
 
 try:
@@ -154,7 +156,7 @@ def safe_get_scalar(series: Union[pd.Series, float, int, None], default: float =
 
 def add_watermark(fig: go.Figure) -> None:
     fig.add_annotation(
-        text="ALADDIN QUANT TERMINAL v18.0",
+        text="ALADDIN QUANT TERMINAL v20.0",
         xref="paper", yref="paper", x=0.99, y=0.01,
         showarrow=False, font=dict(size=10, color=CHART_THEME["watermark"]), opacity=0.6
     )
@@ -240,17 +242,56 @@ def get_vix_data(asset_class: str, ticker: str, period: str = "1y", is_crypto: b
         vix_df['Close'] = synth_vix
         return vix_df.dropna().tail(365 if period == "1y" else 180)
 
-# ============================== NLP NEWS SENTIMENT ENGINE (UPGRADED) ==============================
+# ============================== NLP NEWS SENTIMENT ENGINE (TRIPLE FALLBACK) ==============================
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_news_sentiment(ticker: str, is_crypto: bool) -> Tuple[Optional[float], Optional[float], List[Dict]]:
+    news = []
+    
+    # Method 1: Standard yfinance Ticker endpoint
     try:
         tkr = yf.Ticker(ticker)
         news = tkr.news
-    except Exception as e:
-        logger.error(f"Failed to fetch news for {ticker}: {e}")
-        news = []
+    except Exception:
+        pass
 
-    if not news: return None, None, []
+    # Method 2: yfinance Search Module
+    if not news or not isinstance(news, list) or len(news) == 0:
+        try:
+            search_res = yf.Search(ticker, news_count=8)
+            news = search_res.news
+        except Exception:
+            pass
+
+    # Method 3: Google News RSS (Anti-Rate-Limit Cloud Fallback)
+    if not news or not isinstance(news, list) or len(news) == 0:
+        try:
+            clean_ticker = ticker.replace('^', '').replace('.NS', '')
+            query_suffix = "crypto" if is_crypto else "stock market"
+            search_query = urllib.parse.quote(f"{clean_ticker} {query_suffix} news")
+            
+            url = f"https://news.google.com/rss/search?q={search_query}&hl=en-US&gl=US&ceid=US:en"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
+            }
+            response = requests.get(url, headers=headers, timeout=5)
+            
+            if response.status_code == 200:
+                root = ET.fromstring(response.content)
+                news = []
+                for item in root.findall('./channel/item')[:8]:
+                    title_elem = item.find('title')
+                    source_elem = item.find('source')
+                    if title_elem is not None:
+                        news.append({
+                            'title': title_elem.text,
+                            'publisher': source_elem.text if source_elem is not None else 'Google News'
+                        })
+        except Exception as e:
+            logger.error(f"Google News RSS Fallback failed for {ticker}: {e}")
+
+    # If all 3 methods fail, fail gracefully
+    if not news or not isinstance(news, list) or len(news) == 0:
+        return None, None, []
 
     total_polarity = 0.0
     total_subjectivity = 0.0
@@ -303,7 +344,7 @@ def fetch_news_sentiment(ticker: str, is_crypto: bool) -> Tuple[Optional[float],
 def render_nlp_sentiment(ticker: str, is_crypto: bool) -> None:
     st.subheader("NLP NEWS SENTIMENT ENGINE")
     score_data = fetch_news_sentiment(ticker, is_crypto)
-    if score_data[0] is None: return st.warning("No recent news context found.")
+    if score_data[0] is None: return st.warning("No recent news context found. IP Rate Limited.")
     
     score, subjectivity, headlines = score_data
 
