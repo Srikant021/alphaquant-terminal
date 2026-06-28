@@ -154,7 +154,7 @@ def safe_get_scalar(series: Union[pd.Series, float, int, None], default: float =
 
 def add_watermark(fig: go.Figure) -> None:
     fig.add_annotation(
-        text="ALADDIN QUANT TERMINAL v16.0",
+        text="ALADDIN QUANT TERMINAL v18.0",
         xref="paper", yref="paper", x=0.99, y=0.01,
         showarrow=False, font=dict(size=10, color=CHART_THEME["watermark"]), opacity=0.6
     )
@@ -172,7 +172,6 @@ def aladdin_metric(label: str, value: str, delta: Optional[str] = None, invert_c
     """, unsafe_allow_html=True)
 
 def safe_render(func: Callable, *args, **kwargs) -> None:
-    """Component Isolation: Prevents one broken module from crashing the entire terminal."""
     try:
         func(*args, **kwargs)
     except Exception as e:
@@ -182,7 +181,6 @@ def safe_render(func: Callable, *args, **kwargs) -> None:
 # ============================== DATA INGESTION (L1 + L2 CACHING) ==============================
 @st.cache_data(ttl=300, show_spinner=False)
 def _fetch_data_internal(ticker: str, period: str, interval: str, is_crypto: bool) -> Optional[pd.DataFrame]:
-    """L2 Cache: Unified raw fetch using yfinance for both Equities and Crypto."""
     if interval == '15m': 
         period = '1mo' 
     elif interval in ['1h', '4h'] and period in ['max', '5y', '10y', '2y']: 
@@ -205,7 +203,6 @@ def _fetch_data_internal(ticker: str, period: str, interval: str, is_crypto: boo
     return data.dropna(subset=['Close'])
 
 def fetch_data(ticker: str, period: str = "1y", interval: str = "1d", is_crypto: bool = False) -> Optional[pd.DataFrame]:
-    """L1 Cache: Prevents API re-fetches when widgets are interacted with."""
     if 'market_data' not in st.session_state:
         st.session_state.market_data = {}
         
@@ -243,32 +240,9 @@ def get_vix_data(asset_class: str, ticker: str, period: str = "1y", is_crypto: b
         vix_df['Close'] = synth_vix
         return vix_df.dropna().tail(365 if period == "1y" else 180)
 
-# ============================== 0.1 GLOBAL MACRO PULSE ==============================
-def render_macro_pulse() -> None:
-    st.subheader("GLOBAL MACRO PULSE & SYSTEMIC LIQUIDITY")
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        f_dxy = executor.submit(fetch_data, "DX-Y.NYB", "5d", "1d", False)
-        f_tnx = executor.submit(fetch_data, "^TNX", "5d", "1d", False)
-        f_hyg = executor.submit(fetch_data, "HYG", "5d", "1d", False)
-        dxy_data, tnx_data, hyg_data = f_dxy.result(), f_tnx.result(), f_hyg.result()
-
-    def get_metrics(df: Optional[pd.DataFrame]) -> Tuple[float, float]:
-        if df is None or len(df) < 2: return 0.0, 0.0
-        cur, prev = safe_get_scalar(df['Close']), safe_get_scalar(df['Close'].iloc[-2])
-        return cur, ((cur - prev) / prev) * 100 if prev != 0 else 0.0
-
-    dxy_cur, dxy_pct = get_metrics(dxy_data)
-    tnx_cur, tnx_pct = get_metrics(tnx_data)
-    hyg_cur, hyg_pct = get_metrics(hyg_data)
-
-    c1, c2, c3 = st.columns(3)
-    with c1: aladdin_metric("US DOLLAR INDEX (DXY) [Risk-Off]", f"{dxy_cur:.2f}", f"{dxy_pct:+.2f}%", invert_color=True)
-    with c2: aladdin_metric("10-YEAR TREASURY YIELD (^TNX)", f"{tnx_cur:.2f}%", f"{tnx_pct:+.2f}%", invert_color=True)
-    with c3: aladdin_metric("HIGH YIELD CREDIT (HYG) [Risk-On]", f"${hyg_cur:.2f}", f"{hyg_pct:+.2f}%", invert_color=False)
-
-# ============================== 0.2 NLP NEWS SENTIMENT ENGINE ==============================
+# ============================== NLP NEWS SENTIMENT ENGINE (UPGRADED) ==============================
 @st.cache_data(ttl=600, show_spinner=False)
-def fetch_news_sentiment(ticker: str, is_crypto: bool) -> Tuple[Optional[float], List[Dict]]:
+def fetch_news_sentiment(ticker: str, is_crypto: bool) -> Tuple[Optional[float], Optional[float], List[Dict]]:
     try:
         tkr = yf.Ticker(ticker)
         news = tkr.news
@@ -276,57 +250,94 @@ def fetch_news_sentiment(ticker: str, is_crypto: bool) -> Tuple[Optional[float],
         logger.error(f"Failed to fetch news for {ticker}: {e}")
         news = []
 
-    if not news: return None, []
+    if not news: return None, None, []
 
-    pos_words = ['surge', 'jump', 'gain', 'rally', 'bull', 'upgrade', 'high', 'soar', 'outperform', 'beat', 'growth', 'positive', 'strong', 'buy', 'record', 'soars', 'boom', 'adopt', 'adoption', 'approve', 'etf', 'profit', 'launch']
-    neg_words = ['crash', 'fall', 'drop', 'bear', 'downgrade', 'low', 'hack', 'probe', 'inflation', 'rate', 'hike', 'weak', 'sell', 'miss', 'negative', 'plunge', 'loss', 'lawsuit', 'sec', 'sue', 'fined', 'fraud', 'bankrupt', 'ban', 'illegal', 'investigate', 'plummets', 'slips', 'debt']
-
-    score = 0
+    total_polarity = 0.0
+    total_subjectivity = 0.0
     analyzed_headlines = []
-    for item in news[:6]:
-        title = item.get('title', '').lower()
-        if not title: continue
-        p_count = sum(1 for w in pos_words if w in title)
-        n_count = sum(1 for w in neg_words if w in title)
-        net = p_count - n_count
-        score += net
-        if net > 0: tag, color = "BULLISH", CHART_THEME['bullish']
-        elif net < 0: tag, color = "BEARISH", CHART_THEME['bearish']
-        else: tag, color = "NEUTRAL", CHART_THEME['secondary']
-        analyzed_headlines.append({'title': item.get('title', ''), 'publisher': item.get('publisher', 'WIRE'), 'tag': tag, 'color': color})
+    
+    fin_bull = {'surge', 'rally', 'bullish', 'breakout', 'growth', 'outperform', 'etf', 'buy', 'acquisition', 'profit', 'gain', 'soar', 'approve'}
+    fin_bear = {'crash', 'bearish', 'drop', 'lawsuit', 'sec', 'regulatory', 'probe', 'deficit', 'sell', 'inflation', 'dump', 'hack', 'miss'}
 
-    max_possible = len(analyzed_headlines) * 2
-    normalized_score = (score / max_possible) * 100 if max_possible > 0 else 0
-    return max(-100, min(100, normalized_score)), analyzed_headlines
+    for item in news[:8]:
+        title = item.get('title', '')
+        publisher = item.get('publisher', 'WIRE')
+        if not title: continue
+        
+        blob = TextBlob(title)
+        polarity = blob.sentiment.polarity       
+        subjectivity = blob.sentiment.subjectivity 
+        
+        title_lower = title.lower()
+        for word in fin_bull:
+            if word in title_lower: polarity += 0.15
+        for word in fin_bear:
+            if word in title_lower: polarity -= 0.15
+            
+        polarity = max(-1.0, min(1.0, polarity))
+        total_polarity += polarity
+        total_subjectivity += subjectivity
+        
+        if polarity > 0.05: 
+            tag, color = "BULLISH", CHART_THEME['bullish']
+        elif polarity < -0.05: 
+            tag, color = "BEARISH", CHART_THEME['bearish']
+        else: 
+            tag, color = "NEUTRAL", CHART_THEME['secondary']
+            
+        analyzed_headlines.append({
+            'title': title, 
+            'publisher': publisher, 
+            'tag': tag, 
+            'color': color,
+            'polarity': polarity
+        })
+
+    count = len(analyzed_headlines)
+    if count == 0: return None, None, []
+    
+    avg_polarity = (total_polarity / count) * 100 
+    avg_subjectivity = (total_subjectivity / count) * 100 
+    return avg_polarity, avg_subjectivity, analyzed_headlines
 
 def render_nlp_sentiment(ticker: str, is_crypto: bool) -> None:
     st.subheader("NLP NEWS SENTIMENT ENGINE")
-    score, headlines = fetch_news_sentiment(ticker, is_crypto)
-    if score is None: return st.warning("No recent news context found.")
+    score_data = fetch_news_sentiment(ticker, is_crypto)
+    if score_data[0] is None: return st.warning("No recent news context found.")
+    
+    score, subjectivity, headlines = score_data
 
-    gauge_color = CHART_THEME['bullish'] if score > 15 else (CHART_THEME['bearish'] if score < -15 else CHART_THEME['secondary'])
+    gauge_color = CHART_THEME['bullish'] if score > 10 else (CHART_THEME['bearish'] if score < -10 else CHART_THEME['secondary'])
     fig_gauge = go.Figure(go.Indicator(
-        mode="gauge+number", value=score, domain={'x': [0, 1], 'y': [0, 1]}, title={'text': "Live Media Sentiment"},
+        mode="gauge+number", value=score, domain={'x': [0, 1], 'y': [0, 1]}, title={'text': "TextBlob Financial Sentiment"},
         gauge={
             'axis': {'range': [-100, 100]}, 'bar': {'color': gauge_color},
-            'steps': [{'range': [-100, -20], 'color': "rgba(239, 68, 68, 0.2)"}, {'range': [-20, 20], 'color': "rgba(255, 255, 255, 0.1)"}, {'range': [20, 100], 'color': "rgba(34, 197, 94, 0.2)"}]
+            'steps': [
+                {'range': [-100, -15], 'color': "rgba(239, 68, 68, 0.2)"}, 
+                {'range': [-15, 15], 'color': "rgba(255, 255, 255, 0.1)"}, 
+                {'range': [15, 100], 'color': "rgba(34, 197, 94, 0.2)"}
+            ]
         }
     ))
-    fig_gauge.update_layout(template=CHART_THEME["template"], height=220, margin=dict(l=20, r=20, t=40, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+    fig_gauge.update_layout(template=CHART_THEME["template"], height=200, margin=dict(l=20, r=20, t=40, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     st.plotly_chart(fig_gauge, use_container_width=True)
 
-    st.markdown("<div style='margin-bottom: 10px; color: #94a3b8; font-size: 11px; text-transform: uppercase;'>REAL-TIME HEADLINES SCANNED</div>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    c1.metric("Net Bias Score", f"{score:+.1f}")
+    c2.metric("Media Subjectivity", f"{subjectivity:.1f}%")
+
+    st.markdown("<div style='margin-top: 15px; margin-bottom: 10px; color: #94a3b8; font-size: 11px; text-transform: uppercase;'>REAL-TIME HEADLINES & POLARITY SCORES</div>", unsafe_allow_html=True)
     for h in headlines:
         st.markdown(f"""
             <div class="news-headline" style="border-left: 3px solid {h['color']}; padding-left: 8px; margin-bottom: 8px; font-size: 13px;">
                 {h['title']} <br>
-                <span style="font-size: 10px; color: #64748b; text-transform: uppercase;">[{h['tag']}] • {h['publisher']}</span>
+                <span style="font-size: 10px; color: #64748b; text-transform: uppercase;">[{h['tag']} • Score: {h['polarity']:+.2f}] • {h['publisher']}</span>
             </div>
         """, unsafe_allow_html=True)
 
-# ============================== REAL-TIME CHART & VWAP ==============================
+# ============================== GAP-FREE REAL-TIME CHART, VWAP & LIQUIDITY ==============================
 def render_realtime_chart(selected_name: str, ticker: str, is_crypto: bool) -> None:
-    st.subheader("MARKET PRICE & VOLUME")
+    st.subheader("MARKET PRICE, VOLUME & MOMENTUM")
     timeframe = st.radio("Select Timeframe", ["15m", "1h", "4h", "1d"], index=1, horizontal=True, label_visibility="collapsed")
     period, interval = ("1mo", "15m") if timeframe == "15m" else ("730d", "1h") if timeframe in ["1h", "4h"] else ("2y", "1d")
 
@@ -344,35 +355,89 @@ def render_realtime_chart(selected_name: str, ticker: str, is_crypto: bool) -> N
     else:
         data['VWAP'] = np.nan
         
-    data['EMA_20'] = data['Close'].ewm(span=20, adjust=False).mean()
-
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.02)
-    fig.add_trace(go.Candlestick(x=data.index, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name='Price', increasing_line_color=CHART_THEME['bullish'], decreasing_line_color=CHART_THEME['bearish']), row=1, col=1)
+    data['EMA_9'] = data['Close'].ewm(span=9, adjust=False).mean()
+    data['EMA_21'] = data['Close'].ewm(span=21, adjust=False).mean()
+    data['RSI'] = calculate_rsi(data['Close'], 14)
     
-    if 'EMA_20' in data.columns and not data['EMA_20'].isna().all():
-        fig.add_trace(go.Scatter(x=data.index, y=data['EMA_20'], mode='lines', name='EMA 20', line=dict(color='#8b5cf6', width=1.5, dash='solid')), row=1, col=1)
-    if 'VWAP' in data.columns and not data['VWAP'].isna().all():
-        fig.add_trace(go.Scatter(x=data.index, y=data['VWAP'], mode='lines', name='VWAP', line=dict(color=CHART_THEME['secondary'], width=2, dash='dot')), row=1, col=1)
+    data['Prev_High'] = data['High'].rolling(20).max().shift(1)
+    data['Prev_Low'] = data['Low'].rolling(20).min().shift(1)
+    data['Supply_Sweep'] = (data['High'] > data['Prev_High']) & (data['Close'] < data['Prev_High'])
+    data['Demand_Sweep'] = (data['Low'] < data['Prev_Low']) & (data['Close'] > data['Prev_Low'])
+
+    last_close = safe_get_scalar(data['Close'])
+    x_format = '%Y-%m-%d' if timeframe == "1d" else '%Y-%m-%d %H:%M'
+    x_axis_string = data.index.strftime(x_format)
+
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.65, 0.15, 0.20], vertical_spacing=0.03)
+
+    fig.add_trace(go.Candlestick(
+        x=x_axis_string, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], 
+        name='Price', increasing_line_color=CHART_THEME['bullish'], decreasing_line_color=CHART_THEME['bearish']
+    ), row=1, col=1)
+    
+    if not data['EMA_9'].isna().all():
+        fig.add_trace(go.Scatter(x=x_axis_string, y=data['EMA_9'], mode='lines', name='EMA 9', line=dict(color='#fbbf24', width=1.5)), row=1, col=1)
+    if not data['EMA_21'].isna().all():
+        fig.add_trace(go.Scatter(x=x_axis_string, y=data['EMA_21'], mode='lines', name='EMA 21', line=dict(color='#8b5cf6', width=2)), row=1, col=1)
+    if not data['VWAP'].isna().all():
+        fig.add_trace(go.Scatter(x=x_axis_string, y=data['VWAP'], mode='lines', name='VWAP', line=dict(color='#e2e8f0', width=1.5, dash='dot')), row=1, col=1)
+
+    supply_data = data[data['Supply_Sweep']]
+    demand_data = data[data['Demand_Sweep']]
+    
+    if not supply_data.empty:
+        fig.add_trace(go.Scatter(
+            x=supply_data.index.strftime(x_format), y=supply_data['High'] * 1.002, mode='markers', 
+            marker=dict(symbol='triangle-down', size=12, color=CHART_THEME["bearish"], line=dict(width=1, color='white')), 
+            name='Supply Sweep'
+        ), row=1, col=1)
+    if not demand_data.empty:
+        fig.add_trace(go.Scatter(
+            x=demand_data.index.strftime(x_format), y=demand_data['Low'] * 0.998, mode='markers', 
+            marker=dict(symbol='triangle-up', size=12, color=CHART_THEME["bullish"], line=dict(width=1, color='white')), 
+            name='Demand Sweep'
+        ), row=1, col=1)
+
+    fig.add_hline(y=last_close, line_dash="dot", line_color=CHART_THEME["primary"], line_width=1.5, 
+                  annotation_text=f"{last_close:,.2f}", annotation_position="right", 
+                  annotation_font_color=CHART_THEME["primary"], row=1, col=1)
+
     if 'Volume' in data.columns and not (data['Volume'] == 0).all():
         colors = [CHART_THEME['bullish'] if row['Close'] >= row['Open'] else CHART_THEME['bearish'] for _, row in data.iterrows()]
-        fig.add_trace(go.Bar(x=data.index, y=data['Volume'], name='Volume', marker_color=colors, opacity=0.6), row=2, col=1)
+        fig.add_trace(go.Bar(x=x_axis_string, y=data['Volume'], name='Volume', marker_color=colors, opacity=0.85, marker_line_width=0), row=2, col=1)
 
-    fig.update_layout(template=CHART_THEME['template'], height=550, xaxis_rangeslider_visible=False, hovermode='x unified', bargap=0, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.05)', showspikes=True, spikemode='across', spikethickness=1, spikedash='dot', spikecolor='rgba(255,255,255,0.3)')
-    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.05)', showspikes=True, spikemode='across', spikethickness=1, spikedash='dot', spikecolor='rgba(255,255,255,0.3)')
+    if not data['RSI'].isna().all():
+        fig.add_trace(go.Scatter(x=x_axis_string, y=data['RSI'], mode='lines', name='RSI 14', line=dict(color=CHART_THEME['primary'], width=1.5)), row=3, col=1)
+        fig.add_hrect(y0=30, y1=70, fillcolor="rgba(255, 255, 255, 0.05)", line_width=0, row=3, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color=CHART_THEME['bearish'], line_width=1, row=3, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color=CHART_THEME['bullish'], line_width=1, row=3, col=1)
+
+    fig.update_layout(
+        template=CHART_THEME['template'], height=650, xaxis_rangeslider_visible=False, hovermode='x unified', 
+        bargap=0, bargroupgap=0, margin=dict(l=10, r=60, t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', showlegend=False
+    )
     
-    if timeframe in ['15m', '1h', '4h']: fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+    fig.update_xaxes(type='category', showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.05)', showticklabels=False, row=1, col=1)
+    fig.update_xaxes(type='category', showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.05)', showticklabels=False, row=2, col=1)
+    fig.update_xaxes(type='category', categoryorder='category ascending', showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.05)', showticklabels=True, showspikes=True, spikemode='across', spikethickness=1, spikedash='dot', spikecolor='rgba(255,255,255,0.3)', row=3, col=1)
+    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.05)')
+    fig.update_yaxes(range=[0, 100], row=3, col=1)
+    
     add_watermark(fig)
     st.plotly_chart(fig, use_container_width=True)
 
     last_24h = data.loc[data.index >= data.index.max() - pd.Timedelta(days=1)]
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Latest Close", f"{safe_get_scalar(data['Close']):,.2f}")
+    c1.metric("Latest Close", f"{last_close:,.2f}")
     c2.metric("24h High", f"{last_24h['High'].max():,.2f}")
     c3.metric("24h Low", f"{last_24h['Low'].min():,.2f}")
-    if not data['VWAP'].isna().all(): c4.metric("Current VWAP", f"{safe_get_scalar(data['VWAP']):,.2f}")
+    
+    last_supply = safe_get_scalar(data['Supply_Sweep'])
+    last_demand = safe_get_scalar(data['Demand_Sweep'])
+    regime = "SUPPLY SWEEP" if last_supply else ("DEMAND SWEEP" if last_demand else "DISCOVERY")
+    c4.metric("Micro-Regime", regime)
 
-# ============================== 1-8. METRICS (VRP, HURST, ETC) ==============================
+# ============================== VOLATILITY & SYSTEMIC METRICS ==============================
 def render_volatility_metrics(asset_class: str, ticker: str, is_crypto: bool) -> None:
     st.subheader("1. IMPLIED VOLATILITY RANK")
     vix_name = "India VIX" if asset_class == "Indian Equities" else "Synthetic IV (30D HV)"
@@ -417,16 +482,11 @@ def render_expected_move(selected_name: str, ticker: str, asset_class: str, curr
     fig.add_trace(go.Scatter(x=asset_data.index, y=asset_data['Close'], mode='lines', name=selected_name, line=dict(color=CHART_THEME["primary"], width=3)))
     
     tomorrow = asset_data.index[-1] + timedelta(days=1)
-    
     fig.add_trace(go.Scatter(
         x=[asset_data.index[-1], tomorrow, tomorrow, asset_data.index[-1]], 
         y=[spot, spot + exp_move, spot - exp_move, spot], 
-        fill='toself', 
-        fillcolor='rgba(251, 191, 36, 0.15)',
-        line=dict(color='rgba(255,255,255,0)'),
-        name='1σ Range',
-        showlegend=False,
-        hoverinfo='skip'
+        fill='toself', fillcolor='rgba(251, 191, 36, 0.15)', line=dict(color='rgba(255,255,255,0)'),
+        name='1σ Range', showlegend=False, hoverinfo='skip'
     ))
     
     fig.add_trace(go.Scatter(x=[tomorrow], y=[spot + exp_move], mode='markers+text', name='+1σ', marker=dict(color=CHART_THEME["bullish"], size=12, symbol='triangle-up'), text=[f"+{exp_move:,.0f}"], textposition="top right"))
@@ -483,11 +543,8 @@ def render_volatility_cone(selected_name: str, ticker: str, trading_days: int, i
         if w > len(returns): continue
         vol_series = returns.rolling(w).std() * np.sqrt(trading_days) * 100
         stats.append({
-            'window': w,
-            'max': safe_get_scalar(vol_series.max()),
-            'min': safe_get_scalar(vol_series.min()),
-            'median': safe_get_scalar(vol_series.median()),
-            'current': safe_get_scalar(vol_series.iloc[-1])
+            'window': w, 'max': safe_get_scalar(vol_series.max()), 'min': safe_get_scalar(vol_series.min()),
+            'median': safe_get_scalar(vol_series.median()), 'current': safe_get_scalar(vol_series.iloc[-1])
         })
     df_stats = pd.DataFrame(stats)
 
@@ -514,7 +571,6 @@ def render_vrp(selected_name: str, ticker: str, asset_class: str, trading_days: 
     fig = make_subplots(rows=2, cols=1, row_heights=[0.7, 0.3], shared_xaxes=True, vertical_spacing=0.02)
     fig.add_trace(go.Scatter(x=df.index, y=df['VIX'], name='Implied Vol', line=dict(color=CHART_THEME["primary"], width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['HV'], name='Realized Vol', line=dict(color=CHART_THEME["secondary"], width=2)), row=1, col=1)
-    
     fig.add_trace(go.Scatter(x=df.index, y=df['HV'], showlegend=False, line=dict(width=0), hoverinfo='skip'), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['VIX'], fill='tonexty', fillcolor='rgba(103, 232, 249, 0.15)', line=dict(width=0), name='Spread', showlegend=False, hoverinfo='skip'), row=1, col=1)
 
@@ -522,8 +578,6 @@ def render_vrp(selected_name: str, ticker: str, asset_class: str, trading_days: 
     fig.add_trace(go.Bar(x=df.index, y=df['VRP'], name='VRP Spread', marker_color=colors, opacity=0.8), row=2, col=1)
     
     fig.update_layout(template=CHART_THEME["template"], height=350, margin=dict(t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', hovermode='x unified', bargap=0)
-    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.05)')
-    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.05)')
     st.plotly_chart(fig, use_container_width=True)
 
     c1, c2, c3 = st.columns(3)
@@ -540,10 +594,8 @@ def render_hurst_regime(selected_name: str, ticker: str, is_crypto: bool) -> Non
         if len(ts) < 20: return np.nan
         lags = range(2, 20)
         reg_val = [np.std(ts.values[lag:] - ts.values[:-lag]) for lag in lags]
-        try:
-            return np.polyfit(np.log(lags), np.log(reg_val), 1)[0]
-        except:
-            return np.nan
+        try: return np.polyfit(np.log(lags), np.log(reg_val), 1)[0]
+        except: return np.nan
 
     log_prices = np.log(data['Close'])
     hurst_series = log_prices.rolling(window=60).apply(calculate_hurst, raw=False)
@@ -568,48 +620,8 @@ def render_hurst_regime(selected_name: str, ticker: str, is_crypto: bool) -> Non
     c1.metric("Hurst Value", f"{current_hurst:.3f}")
     c2.metric("Regime", regime)
 
-def render_liquidity_sweep(selected_name: str, ticker: str, is_crypto: bool) -> None:
-    st.subheader("7. INTRADAY LIQUIDITY SWEEPS (15M)")
-    data = fetch_data(ticker, period="1mo", interval="15m", is_crypto=is_crypto)
-    if data is None: return st.warning("Intraday data lookup failed.")
-
-    df = data.copy()
-    df['Prev_High'] = df['High'].rolling(20).max().shift(1)
-    df['Prev_Low'] = df['Low'].rolling(20).min().shift(1)
-    df['Supply_Sweep'] = (df['High'] > df['Prev_High']) & (df['Close'] < df['Prev_High'])
-    df['Demand_Sweep'] = (df['Low'] < df['Prev_Low']) & (df['Close'] > df['Prev_Low'])
-    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
-    plot_df = df.tail(100).reset_index()
-
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df['Open'], high=plot_df['High'], low=plot_df['Low'], close=plot_df['Close'], name='Candles'))
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['EMA_20'], mode='lines', name='EMA 20', line=dict(color='#8b5cf6', width=1.5, dash='dot')))
-
-    supply_idx = plot_df[plot_df['Supply_Sweep']].index
-    demand_idx = plot_df[plot_df['Demand_Sweep']].index
-
-    if not supply_idx.empty:
-        fig.add_trace(go.Scatter(x=supply_idx, y=plot_df.loc[supply_idx, 'High'] * 1.002, mode='markers', marker=dict(symbol='triangle-down', size=16, color=CHART_THEME["bearish"], line=dict(width=2, color='white')), name='Supply Trap'))
-    if not demand_idx.empty:
-        fig.add_trace(go.Scatter(x=demand_idx, y=plot_df.loc[demand_idx, 'Low'] * 0.998, mode='markers', marker=dict(symbol='triangle-up', size=16, color=CHART_THEME["bullish"], line=dict(width=2, color='white')), name='Demand Trap'))
-
-    fig.update_layout(template=CHART_THEME["template"], height=300, xaxis_rangeslider_visible=False, hovermode='x unified', margin=dict(t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.05)', showticklabels=False)
-    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.05)')
-    
-    add_watermark(fig)
-    st.plotly_chart(fig, use_container_width=True)
-
-    if not df.empty:
-        last_supply = df['Supply_Sweep'].iloc[-1]
-        last_demand = df['Demand_Sweep'].iloc[-1]
-        if last_supply: regime = "SUPPLY SWEEP (Resistance)"
-        elif last_demand: regime = "DEMAND SWEEP (Support)"
-        else: regime = "PRICE DISCOVERY"
-        st.metric("Latest Micro-Structure Regime", regime)
-
 def render_advanced_volatility(selected_name: str, ticker: str, trading_days: int, is_crypto: bool) -> None:
-    st.subheader("8. YANG-ZHANG VOLATILITY")
+    st.subheader("7. YANG-ZHANG VOLATILITY")
     data = fetch_data(ticker, period="1y", is_crypto=is_crypto)
     if data is None: return st.warning("Data unavailable.")
 
@@ -632,9 +644,8 @@ def render_advanced_volatility(selected_name: str, ticker: str, trading_days: in
     c2.metric("Close-to-Close Vol", f"{c2c_vol:.2f}%")
     c3.metric("Hidden Gap Risk", f"{yz_vol - c2c_vol:+.2f}%", delta_color="inverse")
 
-# ============================== 9. Market Synthesis ==============================
 def render_market_synthesis(selected_name: str, ticker: str, asset_class: str, div1: str, div2: str, div1_name: str, div2_name: str, currency: str, trading_days: int, is_crypto: bool) -> None:
-    st.subheader("9. MULTI-TIMEFRAME MARKET SYNTHESIS")
+    st.subheader("8. MULTI-TIMEFRAME MARKET SYNTHESIS")
     with concurrent.futures.ThreadPoolExecutor() as executor:
         f_vix = executor.submit(get_vix_data, asset_class, ticker, "6mo", is_crypto)
         f_daily = executor.submit(fetch_data, ticker, "1y", "1d", is_crypto)
@@ -738,7 +749,7 @@ def train_and_validate_ml_model(ticker: str, is_crypto: bool):
     return model_full, scaler_full, features, metrics
 
 def render_ml_engine(ticker: str, is_crypto: bool) -> None:
-    st.subheader("10. AI PREDICTIVE ENGINE (XGBoost + Purged CV)")
+    st.subheader("9. AI PREDICTIVE ENGINE (XGBoost + Purged CV)")
     model_full, scaler_full, features, metrics = train_and_validate_ml_model(ticker, is_crypto)
     if model_full is None: return st.warning("Insufficient data to train ML model.")
 
@@ -791,10 +802,9 @@ def render_ml_engine(ticker: str, is_crypto: bool) -> None:
         fig_imp.update_layout(title="Feature Importance", template=CHART_THEME["template"], height=250, xaxis_title="Weight", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10, r=10, t=40, b=10))
         st.plotly_chart(fig_imp, use_container_width=True)
 
-# ============================== RISK PORTFOLIO (HISTORICAL VAR & RISK PARITY) ==============================
+# ============================== RISK PORTFOLIO & OPTIONS GREEKS ==============================
 def render_portfolio_risk(is_crypto: bool, currency: str) -> None:
-    st.subheader("11. MULTI-ASSET PORTFOLIO STRESS TEST (Risk Parity & Hist VaR)")
-    
+    st.subheader("10. MULTI-ASSET PORTFOLIO STRESS TEST (Risk Parity & Hist VaR)")
     basket = list(CRYPTO_ASSETS.values()) if is_crypto else list(INDIAN_ASSETS.values())[:3]
     basket_names = list(CRYPTO_ASSETS.keys()) if is_crypto else list(INDIAN_ASSETS.keys())[:3]
     
@@ -809,27 +819,21 @@ def render_portfolio_risk(is_crypto: bool, currency: str) -> None:
 
     port_df = pd.DataFrame(data_dict).ffill().dropna()
     returns = np.log(port_df / port_df.shift(1)).dropna()
-    
     std_devs = returns.std()
     inv_vol = 1.0 / std_devs
     weights = (inv_vol / inv_vol.sum()).values
     
     cov_matrix = returns.cov()
     port_std_dev = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))) * np.sqrt(252)
-    
     hist_port_returns = returns.dot(weights)
     var_95 = abs(np.percentile(hist_port_returns, 5)) * 100
-    
     weight_str = ", ".join([f"{n}: {w*100:.0f}%" for n, w in zip(successful_names, weights)])
     
     c1, c2, c3 = st.columns(3)
     c1.metric("Risk Parity Weights", weight_str)
     c2.metric("Portfolio Annual Volatility", f"{port_std_dev*100:.2f}%")
     c3.metric("Historical Daily VaR (95%)", f"-{var_95:.2f}%", "Capital at Risk", delta_color="inverse")
-    
-    st.info(f"**Institutional Upgrade:** Weights are actively allocated inversely to volatility (Risk Parity). VaR is derived from actual historical tail events, avoiding the dangerous Gaussian assumption.")
 
-# ============================== OPTIONS GREEKS (REFINED) ==============================
 def bs_greeks_advanced(S: float, K: float, T_days: int, r_pct: float, sigma_pct: float, q_pct: float) -> Dict[str, Dict[str, float]]:
     T, r, sigma, q = T_days / 365.0, r_pct / 100.0, sigma_pct / 100.0, q_pct / 100.0
     if T <= 0: T = 1e-5
@@ -841,26 +845,21 @@ def bs_greeks_advanced(S: float, K: float, T_days: int, r_pct: float, sigma_pct:
     return {
         'Call': {
             'Price': S * np.exp(-q * T) * si.norm.cdf(d1) - K * np.exp(-r * T) * si.norm.cdf(d2),
-            'Delta': np.exp(-q * T) * si.norm.cdf(d1),
-            'Gamma': (np.exp(-q * T) * si.norm.pdf(d1)) / (S * sigma * np.sqrt(T)),
+            'Delta': np.exp(-q * T) * si.norm.cdf(d1), 'Gamma': (np.exp(-q * T) * si.norm.pdf(d1)) / (S * sigma * np.sqrt(T)),
             'Theta': ((-S * si.norm.pdf(d1) * sigma * np.exp(-q * T)) / (2 * np.sqrt(T)) + q * S * si.norm.cdf(d1) * np.exp(-q * T) - r * K * np.exp(-r * T) * si.norm.cdf(d2)) / 365,
-            'Vega': S * np.exp(-q * T) * si.norm.pdf(d1) * np.sqrt(T) / 100,
-            'Rho': K * T * np.exp(-r * T) * si.norm.cdf(d2) / 100
+            'Vega': S * np.exp(-q * T) * si.norm.pdf(d1) * np.sqrt(T) / 100, 'Rho': K * T * np.exp(-r * T) * si.norm.cdf(d2) / 100
         },
         'Put': {
             'Price': K * np.exp(-r * T) * si.norm.cdf(-d2) - S * np.exp(-q * T) * si.norm.cdf(-d1),
-            'Delta': np.exp(-q * T) * (si.norm.cdf(d1) - 1),
-            'Gamma': (np.exp(-q * T) * si.norm.pdf(d1)) / (S * sigma * np.sqrt(T)),
+            'Delta': np.exp(-q * T) * (si.norm.cdf(d1) - 1), 'Gamma': (np.exp(-q * T) * si.norm.pdf(d1)) / (S * sigma * np.sqrt(T)),
             'Theta': ((-S * si.norm.pdf(d1) * sigma * np.exp(-q * T)) / (2 * np.sqrt(T)) - q * S * si.norm.cdf(-d1) * np.exp(-q * T) + r * K * np.exp(-r * T) * si.norm.cdf(-d2)) / 365,
-            'Vega': S * np.exp(-q * T) * si.norm.pdf(d1) * np.sqrt(T) / 100,
-            'Rho': -K * T * np.exp(-r * T) * si.norm.cdf(-d2) / 100
+            'Vega': S * np.exp(-q * T) * si.norm.pdf(d1) * np.sqrt(T) / 100, 'Rho': -K * T * np.exp(-r * T) * si.norm.cdf(-d2) / 100
         }
     }
 
 def render_options_greeks(selected_name: str, ticker: str, asset_class: str, is_crypto: bool) -> None:
-    st.subheader("12. ADVANCED OPTIONS PRICING (Merton Extension)")
+    st.subheader("11. ADVANCED OPTIONS PRICING (Merton Extension)")
     asset_data, vix = fetch_data(ticker, period="5d", is_crypto=is_crypto), get_vix_data(asset_class, ticker, period="5d", is_crypto=is_crypto)
-    
     tnx_data = fetch_data("^TNX", period="5d", is_crypto=False)
     live_r = safe_get_scalar(tnx_data['Close']) if tnx_data is not None else (7.0 if asset_class == "Indian Equities" else 4.5)
     
@@ -877,7 +876,6 @@ def render_options_greeks(selected_name: str, ticker: str, asset_class: str, is_
     with c5: div = st.number_input("Div Yield (%)", value=0.0 if is_crypto else 1.2, step=0.1)
 
     st.caption(f"Risk-Free Rate dynamically locked at live 10Y Yield: **{live_r:.2f}%**")
-
     greeks = bs_greeks_advanced(spot, strike, dte, live_r, iv, div)
 
     c1, c2 = st.columns(2)
@@ -922,14 +920,12 @@ def main() -> None:
 
     with st.sidebar:
         st.title("🎛️ Terminal Settings")
-        
         if st.button("🔄 Force Sync Market Data", use_container_width=True):
             st.session_state.market_data = {}
             st.cache_data.clear()
             st.rerun()
             
         st.divider()
-        
         asset_class = st.radio("Asset Class", ["Indian Equities", "Crypto"])
         is_crypto = (asset_class == "Crypto")
 
@@ -949,9 +945,6 @@ def main() -> None:
         aladdin_metric("SYSTEM STATUS", "AUTO-SYNC ACTIVE" if HAS_AUTOREFRESH else "ONLINE", "OPTIMIZED")
 
     with st.spinner("Initializing complete Aladdin quantitative matrix..."):
-        with st.container(border=True):
-            safe_render(render_macro_pulse)
-
         tab_row1_c1, tab_row1_c2 = st.columns([2, 1])
         with tab_row1_c1:
             with st.container(border=True): safe_render(render_realtime_chart, selected_name, ticker, is_crypto)
@@ -972,12 +965,10 @@ def main() -> None:
         with col_row3_2:
             with st.container(border=True): safe_render(render_vrp, selected_name, ticker, asset_class, trading_days, is_crypto)
 
-        col_row4_1, col_row4_2, col_row4_3 = st.columns([1, 2, 1])
+        col_row4_1, col_row4_2 = st.columns(2)
         with col_row4_1:
             with st.container(border=True): safe_render(render_hurst_regime, selected_name, ticker, is_crypto)
         with col_row4_2:
-            with st.container(border=True): safe_render(render_liquidity_sweep, selected_name, ticker, is_crypto)
-        with col_row4_3:
             with st.container(border=True): safe_render(render_advanced_volatility, selected_name, ticker, trading_days, is_crypto)
 
         tab_row5_c1, tab_row5_c2 = st.columns([1, 2])
