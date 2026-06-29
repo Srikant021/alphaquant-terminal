@@ -378,7 +378,6 @@ def render_executive_summary(
             </div>
         """, unsafe_allow_html=True)
 
-
 # ============================== NLP NEWS SENTIMENT ENGINE ==============================
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_news_sentiment(ticker: str, is_crypto: bool) -> Tuple[Optional[float], Optional[float], List[Dict]]:
@@ -504,6 +503,216 @@ def render_nlp_sentiment(ticker: str, is_crypto: bool) -> None:
             </div>
         """, unsafe_allow_html=True)
 
+# ============================== PRE-MARKET & POST-MARKET TABS ==============================
+def render_pre_market_analysis(ticker: str, is_crypto: bool, asset_class: str, currency: str) -> None:
+    section_header("PM1", "AUTOMATED PRE-MARKET PLAN & MACRO SYNTHESIS", "◈")
+    if is_crypto:
+        st.info("Crypto markets operate 24/7. Pre-market concepts are mapped to a 00:00 UTC rollover context.")
+
+    # Fetch macro indicators to judge overnight sentiment
+    macro_tnx = fetch_data("^TNX", period="5d", is_crypto=False)
+    macro_dxy = fetch_data("DX-Y.NYB", period="5d", is_crypto=False)
+    asset_data = fetch_data(ticker, period="1mo", is_crypto=is_crypto)
+
+    tnx_val = safe_get_scalar(macro_tnx['Close']) if macro_tnx is not None else 0.0
+    dxy_val = safe_get_scalar(macro_dxy['Close']) if macro_dxy is not None else 0.0
+    
+    if macro_tnx is not None and len(macro_tnx) >= 2:
+        tnx_change = (macro_tnx['Close'].iloc[-1] - macro_tnx['Close'].iloc[-2]) / macro_tnx['Close'].iloc[-2] * 100
+    else: tnx_change = 0.0
+
+    if macro_dxy is not None and len(macro_dxy) >= 2:
+        dxy_change = (macro_dxy['Close'].iloc[-1] - macro_dxy['Close'].iloc[-2]) / macro_dxy['Close'].iloc[-2] * 100
+    else: dxy_change = 0.0
+    
+    if asset_data is not None and not asset_data.empty:
+        prev_close = asset_data['Close'].iloc[-2] if len(asset_data) > 1 else asset_data['Close'].iloc[-1]
+        prev_high = asset_data['High'].iloc[-2] if len(asset_data) > 1 else asset_data['High'].iloc[-1]
+        prev_low = asset_data['Low'].iloc[-2] if len(asset_data) > 1 else asset_data['Low'].iloc[-1]
+        
+        last_close = asset_data['Close'].iloc[-1]
+        gap_pct = ((last_close - prev_close) / prev_close) * 100
+        pivot = (prev_high + prev_low + prev_close) / 3
+
+        # Macro Bias Logic
+        if tnx_change > 0.5 and dxy_change > 0.2:
+            macro_bias = "BEARISH HEADWINDS"
+            macro_color = CHART_THEME['bearish']
+            macro_desc = "Rising US Yields and a strong Dollar are historically toxic for risk assets. Expect pressure on long positions."
+        elif tnx_change < -0.5 and dxy_change < -0.2:
+            macro_bias = "BULLISH TAILWINDS"
+            macro_color = CHART_THEME['bullish']
+            macro_desc = "Falling US Yields and a weak Dollar provide a highly supportive environment for risk assets and equities."
+        else:
+            macro_bias = "NEUTRAL / MIXED"
+            macro_color = CHART_THEME['secondary']
+            macro_desc = "Macro cross-currents are mixed. The asset will likely trade on its own technicals and intrinsic catalysts today."
+
+        # Gap Logic
+        if gap_pct > 0.5: gap_bias = f"Gap Up (+{gap_pct:.2f}%). Watch for gap-and-go continuation or morning profit-taking."
+        elif gap_pct < -0.5: gap_bias = f"Gap Down ({gap_pct:.2f}%). Watch for panic selling or a quick mean-reversion bounce."
+        else: gap_bias = f"Flat Open ({gap_pct:+.2f}%). Expect initial chop as the market establishes the morning range."
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Previous Close", f"{currency}{prev_close:,.2f}")
+        c2.metric("Overnight Gap (Proxy)", f"{gap_pct:+.2f}%", delta_color="normal")
+        c3.metric("US 10Y Yield", f"{tnx_val:.3f}%", f"{tnx_change:+.2f}%", delta_color="inverse")
+        c4.metric("DXY Index", f"{dxy_val:.2f}", f"{dxy_change:+.2f}%", delta_color="inverse")
+        
+        st.divider()
+
+        # Automated Pre-Market Synthesis (Replaced HTML grids with native Streamlit Columns)
+        st.markdown("#### 🤖 AI PRE-MARKET SYNTHESIS & TRADE PLAN")
+        pm_col1, pm_col2 = st.columns(2)
+        
+        with pm_col1:
+            st.markdown(f"""
+            <div style="background:rgba(255,255,255,0.02); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
+                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Global Macro Regime</div>
+                <div style="font-size:16px; font-weight:700; color:{macro_color}; margin-bottom:8px;">{macro_bias}</div>
+                <div style="font-size:12px; color:#94a3b8; line-height:1.5;">{macro_desc}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with pm_col2:
+            st.markdown(f"""
+            <div style="background:rgba(255,255,255,0.02); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
+                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Opening Action Plan</div>
+                <div style="font-size:14px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{gap_bias}</div>
+                <div style="font-size:12px; color:#94a3b8; line-height:1.5;">
+                    <strong>Bull Trigger:</strong> Sustained trading above Resistance at {currency}{prev_high:,.2f}<br>
+                    <strong>Bear Trigger:</strong> Breakdown below Support at {currency}{prev_low:,.2f}<br>
+                    <strong>Daily Pivot:</strong> {currency}{pivot:,.2f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        st.write("") # Spacer
+        render_nlp_sentiment(ticker, is_crypto)
+    else:
+        st.warning("Pre-market asset data unavailable.")
+
+def render_post_market_analysis(ticker: str, is_crypto: bool, asset_class: str, currency: str, trading_days: int) -> None:
+    section_header("PM2", "AUTOMATED END-OF-DAY WRAP & VERDICT", "◈")
+    asset_data = fetch_data(ticker, period="3mo", is_crypto=is_crypto)
+    
+    if asset_data is not None and not asset_data.empty:
+        today = asset_data.iloc[-1]
+        yest = asset_data.iloc[-2] if len(asset_data) > 1 else today
+        
+        # Calculate Average True Range (ATR) safely
+        high_low = asset_data['High'] - asset_data['Low']
+        high_close = np.abs(asset_data['High'] - asset_data['Close'].shift())
+        low_close = np.abs(asset_data['Low'] - asset_data['Close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = np.max(ranges, axis=1)
+        atr_20 = true_range.rolling(20).mean().iloc[-1] if len(true_range) >= 20 else true_range.mean()
+        
+        day_range = today['High'] - today['Low']
+        if pd.isna(atr_20) or atr_20 == 0:
+            atr_20 = day_range if day_range > 0 else 1e-5
+            
+        range_pct_atr = (day_range / atr_20) * 100
+        
+        # Safely handle missing/zero Volume (like Nifty 50)
+        has_volume = 'Volume' in asset_data.columns and not (asset_data['Volume'] == 0).all()
+        vol_20 = asset_data['Volume'].rolling(20).mean().iloc[-1] if has_volume else 0.0
+        day_vol = today['Volume'] if has_volume else 0.0
+        vol_pct = (day_vol / vol_20) * 100 if (has_volume and vol_20 > 0) else 0.0
+
+        day_return = ((today['Close'] - yest['Close']) / yest['Close']) * 100
+
+        # EOD Analysis Logic
+        # 1. Candle Shape (Where did it close relative to its range?)
+        if day_range == 0: candle_close_pct = 0.5
+        else: candle_close_pct = (today['Close'] - today['Low']) / day_range
+
+        if candle_close_pct > 0.7:
+            candle_bias = "Strong Bullish Close"
+            candle_desc = "Buyers seized absolute control into the close, shutting down sellers near the highs. High probability of continuation."
+            c_color = CHART_THEME['bullish']
+        elif candle_close_pct < 0.3:
+            candle_bias = "Strong Bearish Close"
+            candle_desc = "Aggressive selling into the bell. The asset closed near its lows, indicating trapped buyers and downside risk."
+            c_color = CHART_THEME['bearish']
+        else:
+            candle_bias = "Indecision / Doji"
+            candle_desc = "Price closed near the middle of the daily range. The market is waiting for a catalyst to break the equilibrium."
+            c_color = CHART_THEME['secondary']
+
+        # 2. Volume & Conviction Profile
+        if not has_volume or vol_20 == 0 or pd.isna(vol_20):
+            vol_conviction = "DATA UNAVAILABLE"
+            vol_desc = "Volume data is not consistently reported for this index/asset by the current feed."
+        elif vol_pct > 120:
+            vol_conviction = "HIGH CONVICTION"
+            if day_return > 0: vol_desc = "Institutional Accumulation. Heavy volume supporting the upward move."
+            else: vol_desc = "Institutional Distribution. Heavy volume confirming the sell-off."
+        elif vol_pct < 80:
+            vol_conviction = "LOW CONVICTION"
+            vol_desc = "Retail-driven or algorithmic drift. Lack of heavy institutional participation."
+        else:
+            vol_conviction = "AVERAGE VOLUME"
+            vol_desc = "Standard daily rotation. No extreme flow anomalies detected."
+
+        # 3. Volatility Profile
+        if range_pct_atr > 120:
+            atr_bias = "Trend Expansion"
+            atr_desc = f"The day's range ({currency}{day_range:,.2f}) vastly exceeded the 20-day average. Volatility is expanding."
+        elif range_pct_atr < 80:
+            atr_bias = "Volatility Compression"
+            atr_desc = f"A tight, compressed trading range. Expect an explosive directional breakout soon."
+        else:
+            atr_bias = "Normal Range"
+            atr_desc = "Price action moved within expected historical bounds."
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("EOD Close", f"{currency}{today['Close']:,.2f}", f"{day_return:+.2f}%")
+        c2.metric("Day's Range", f"{currency}{day_range:,.2f}")
+        c3.metric("Range vs ATR(20)", f"{range_pct_atr:.1f}%")
+        c4.metric("Volume vs Avg(20)", f"{vol_pct:.1f}%" if has_volume and vol_pct > 0 else "N/A")
+        
+        st.divider()
+
+        # Automated Post-Market Synthesis (Replaced HTML grids with native Streamlit Columns)
+        st.markdown("#### 🌃 AI POST-MARKET E.O.D. VERDICT")
+        eod_col1, eod_col2, eod_col3 = st.columns(3)
+        
+        with eod_col1:
+            st.markdown(f"""
+            <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
+                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Price Action</div>
+                <div style="font-size:14px; font-weight:700; color:{c_color}; margin-bottom:8px;">{candle_bias}</div>
+                <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{candle_desc}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with eod_col2:
+            st.markdown(f"""
+            <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
+                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Volume Flow</div>
+                <div style="font-size:14px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{vol_conviction}</div>
+                <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{vol_desc}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with eod_col3:
+            st.markdown(f"""
+            <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
+                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">ATR State</div>
+                <div style="font-size:14px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{atr_bias}</div>
+                <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{atr_desc}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.write("") # Spacer
+        col1, col2 = st.columns(2)
+        with col1:
+            render_expected_move(ticker, ticker, asset_class, currency, trading_days, is_crypto)
+        with col2:
+            render_hurst_regime(ticker, ticker, is_crypto)
+    else:
+        st.warning("Post-market data unavailable.")
 
 # ============================== REALTIME CHART: EMA 89 & 21 ==============================
 def render_realtime_chart(selected_name: str, ticker: str, is_crypto: bool) -> None:
@@ -648,7 +857,6 @@ def render_realtime_chart(selected_name: str, ticker: str, is_crypto: bool) -> N
     last_demand = safe_get_scalar(data['Demand_Sweep'])
     regime = "SUPPLY SWEEP" if last_supply else ("DEMAND SWEEP" if last_demand else "DISCOVERY")
     c4.metric("Micro-Regime", regime)
-
 
 # ============================== VOLATILITY & SYSTEMIC METRICS ==============================
 def render_volatility_metrics(asset_class: str, ticker: str, is_crypto: bool) -> None:
@@ -1085,27 +1293,45 @@ def train_and_validate_ml_model(ticker: str, is_crypto: bool):
 
 def render_ml_engine(ticker: str, is_crypto: bool) -> None:
     section_header("9", "AI PREDICTIVE ENGINE (XGBoost + Purged CV)", "◈")
+    
     model_full, scaler_full, features, metrics = train_and_validate_ml_model(ticker, is_crypto)
+    
     if model_full is None:
-        st.warning("Insufficient data to train ML model.")
+        st.warning("Insufficient historical data to train ML model.")
         return
 
     df = fetch_data(ticker, period="60d", interval="1d", is_crypto=is_crypto)
     macro_tnx = fetch_data("^TNX", period="60d", interval="1d", is_crypto=False)
     macro_dxy = fetch_data("DX-Y.NYB", period="60d", interval="1d", is_crypto=False)
 
-    if macro_tnx is not None: df['Macro_TNX'] = macro_tnx['Close'].ffill()
-    if macro_dxy is not None: df['Macro_DXY'] = macro_dxy['Close'].ffill()
+    if df is None or df.empty:
+        st.warning("Live spot data unavailable for prediction.")
+        return
 
+    # Safely assign macro features if API responds, otherwise assign neutral 0.0 values to prevent KeyErrors
+    if macro_tnx is not None and not macro_tnx.empty:
+        df['Macro_TNX'] = macro_tnx['Close'].ffill()
+    if macro_dxy is not None and not macro_dxy.empty:
+        df['Macro_DXY'] = macro_dxy['Close'].ffill()
+
+    # Calculate Technical Features
     df['Log_Returns'] = np.log(df['Close'] / df['Close'].shift(1))
     df['Vol_20D'] = df['Log_Returns'].rolling(20).std() * np.sqrt(252)
     df['Momentum_10D'] = df['Close'] - df['Close'].shift(10)
     df['SMA_20_Dist'] = (df['Close'] / df['Close'].rolling(20).mean()) - 1
     df['RSI_14'] = calculate_rsi(df['Close'], 14)
 
-    live_data = df.dropna().tail(1)[features]
+    # BULLETPROOF FIX: Ensure all required features exist for prediction regardless of live API failures
+    for f in features:
+        if f not in df.columns:
+            df[f] = 0.0 
+
+    # Isolate last row, fill any lingering NaNs created by rolling windows that didn't fully resolve
+    live_data = df.tail(1).copy()
+    live_data = live_data[features].fillna(0.0)
+
     if live_data.empty:
-        st.warning("Not enough live feature data.")
+        st.warning("Prediction calculation failed. Not enough live feature data.")
         return
 
     live_scaled = scaler_full.transform(live_data)
@@ -1619,6 +1845,27 @@ def main() -> None:
             text-transform: uppercase !important;
         }
 
+        /* Customizing Streamlit Tabs */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 24px;
+            background-color: transparent;
+        }
+        .stTabs [data-baseweb="tab"] {
+            height: 50px;
+            white-space: pre-wrap;
+            background-color: transparent;
+            border-radius: 4px 4px 0px 0px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            font-family: 'JetBrains Mono', monospace !important;
+            color: #64748b;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: rgba(103,232,249,0.05);
+            border-bottom: 2px solid #67e8f9 !important;
+            color: #F1F5F9 !important;
+        }
+        
         .stPlotlyChart { border-radius: 4px; overflow: hidden; }
         </style>
     """, unsafe_allow_html=True)
@@ -1682,82 +1929,95 @@ def main() -> None:
             </div>
         """, unsafe_allow_html=True)
 
-    with st.spinner("Initialising Aladdin quantitative matrix…"):
-        
-        # ROW 0: EXECUTIVE SUMMARY
-        safe_render(
-            render_executive_summary,
-            selected_name, ticker, asset_class,
-            div1, div2, div1_name, div2_name,
-            currency, trading_days, is_crypto
-        )
+    # CREATE TABS
+    tab_live, tab_pre, tab_post = st.tabs(["🔴 LIVE MATRIX", "🌅 PRE-MARKET PREP", "🌃 POST-MARKET WRAP"])
 
-        # ROW 1: REALTIME CHART & NLP
-        tab_row1_c1, tab_row1_c2 = st.columns([2, 1])
-        with tab_row1_c1:
-            with st.container(border=True):
-                safe_render(render_realtime_chart, selected_name, ticker, is_crypto)
-        with tab_row1_c2:
-            with st.container(border=True):
-                safe_render(render_nlp_sentiment, ticker, is_crypto)
+    with tab_live:
+        with st.spinner("Initialising Aladdin quantitative matrix…"):
+            
+            # ROW 0: EXECUTIVE SUMMARY
+            safe_render(
+                render_executive_summary,
+                selected_name, ticker, asset_class,
+                div1, div2, div1_name, div2_name,
+                currency, trading_days, is_crypto
+            )
 
-        # ROW 2: IV RANK, EXPECTED MOVE, DIVERGENCE
-        col_row2_1, col_row2_2, col_row2_3 = st.columns(3)
-        with col_row2_1:
-            with st.container(border=True):
-                safe_render(render_volatility_metrics, asset_class, ticker, is_crypto)
-        with col_row2_2:
-            with st.container(border=True):
-                safe_render(render_expected_move, selected_name, ticker, asset_class, currency, trading_days, is_crypto)
-        with col_row2_3:
-            with st.container(border=True):
-                safe_render(render_index_divergence, div1, div2, div1_name, div2_name, currency, is_crypto)
+            # ROW 1: REALTIME CHART & NLP
+            tab_row1_c1, tab_row1_c2 = st.columns([2, 1])
+            with tab_row1_c1:
+                with st.container(border=True):
+                    safe_render(render_realtime_chart, selected_name, ticker, is_crypto)
+            with tab_row1_c2:
+                with st.container(border=True):
+                    safe_render(render_nlp_sentiment, ticker, is_crypto)
 
-        # ROW 3: VOL CONE & VRP
-        col_row3_1, col_row3_2 = st.columns(2)
-        with col_row3_1:
-            with st.container(border=True):
-                safe_render(render_volatility_cone, selected_name, ticker, trading_days, is_crypto)
-        with col_row3_2:
-            with st.container(border=True):
-                safe_render(render_vrp, selected_name, ticker, asset_class, trading_days, is_crypto)
+            # ROW 2: IV RANK, EXPECTED MOVE, DIVERGENCE
+            col_row2_1, col_row2_2, col_row2_3 = st.columns(3)
+            with col_row2_1:
+                with st.container(border=True):
+                    safe_render(render_volatility_metrics, asset_class, ticker, is_crypto)
+            with col_row2_2:
+                with st.container(border=True):
+                    safe_render(render_expected_move, selected_name, ticker, asset_class, currency, trading_days, is_crypto)
+            with col_row2_3:
+                with st.container(border=True):
+                    safe_render(render_index_divergence, div1, div2, div1_name, div2_name, currency, is_crypto)
 
-        # ROW 4: HURST & YANG-ZHANG
-        col_row4_1, col_row4_2 = st.columns(2)
-        with col_row4_1:
-            with st.container(border=True):
-                safe_render(render_hurst_regime, selected_name, ticker, is_crypto)
-        with col_row4_2:
-            with st.container(border=True):
-                safe_render(render_advanced_volatility, selected_name, ticker, trading_days, is_crypto)
+            # ROW 3: VOL CONE & VRP
+            col_row3_1, col_row3_2 = st.columns(2)
+            with col_row3_1:
+                with st.container(border=True):
+                    safe_render(render_volatility_cone, selected_name, ticker, trading_days, is_crypto)
+            with col_row3_2:
+                with st.container(border=True):
+                    safe_render(render_vrp, selected_name, ticker, asset_class, trading_days, is_crypto)
 
-        # ROW 5: MICROSTRUCTURE
+            # ROW 4: HURST & YANG-ZHANG
+            col_row4_1, col_row4_2 = st.columns(2)
+            with col_row4_1:
+                with st.container(border=True):
+                    safe_render(render_hurst_regime, selected_name, ticker, is_crypto)
+            with col_row4_2:
+                with st.container(border=True):
+                    safe_render(render_advanced_volatility, selected_name, ticker, trading_days, is_crypto)
+
+            # ROW 5: MICROSTRUCTURE
+            with st.container(border=True):
+                safe_render(render_microstructure, ticker, is_crypto)
+
+            # ROW 6: ML ENGINE
+            with st.container(border=True):
+                safe_render(render_ml_engine, ticker, is_crypto)
+
+            # ROW 7: PORTFOLIO RISK
+            with st.container(border=True):
+                safe_render(render_portfolio_risk, is_crypto, currency)
+
+            # ROW 8: OPTIONS GREEKS
+            with st.container(border=True):
+                safe_render(render_options_greeks, selected_name, ticker, asset_class, is_crypto)
+
+    with tab_pre:
         with st.container(border=True):
-            safe_render(render_microstructure, ticker, is_crypto)
+            safe_render(render_pre_market_analysis, ticker, is_crypto, asset_class, currency)
 
-        # ROW 6: ML ENGINE
+    with tab_post:
         with st.container(border=True):
-            safe_render(render_ml_engine, ticker, is_crypto)
+            safe_render(render_post_market_analysis, ticker, is_crypto, asset_class, currency, trading_days)
 
-        # ROW 7: PORTFOLIO RISK
-        with st.container(border=True):
-            safe_render(render_portfolio_risk, is_crypto, currency)
+    # FOOTER
+    st.markdown("""
+        <div style="text-align:center;margin-top:32px;padding:16px;
+                    border-top:1px solid #0f1e35;
+                    font-family:'JetBrains Mono',monospace;
+                    font-size:9px;color:#1e3a5f;letter-spacing:2px;">
+            ALADDIN QUANT TERMINAL v22.0 &nbsp;·&nbsp; EMA(89,21) &nbsp;·&nbsp; YANG-ZHANG &nbsp;·&nbsp;
+            HURST &nbsp;·&nbsp; VRP &nbsp;·&nbsp; VPIN &nbsp;·&nbsp; XGBOOST ML &nbsp;·&nbsp; MERTON B-S<br>
+            FOR EDUCATIONAL PURPOSES ONLY — NOT FINANCIAL ADVICE
+        </div>
+    """, unsafe_allow_html=True)
 
-        # ROW 8: OPTIONS GREEKS
-        with st.container(border=True):
-            safe_render(render_options_greeks, selected_name, ticker, asset_class, is_crypto)
-
-        # FOOTER
-        st.markdown("""
-            <div style="text-align:center;margin-top:32px;padding:16px;
-                        border-top:1px solid #0f1e35;
-                        font-family:'JetBrains Mono',monospace;
-                        font-size:9px;color:#1e3a5f;letter-spacing:2px;">
-                ALADDIN QUANT TERMINAL v22.0 &nbsp;·&nbsp; EMA(89,21) &nbsp;·&nbsp; YANG-ZHANG &nbsp;·&nbsp;
-                HURST &nbsp;·&nbsp; VRP &nbsp;·&nbsp; VPIN &nbsp;·&nbsp; XGBOOST ML &nbsp;·&nbsp; MERTON B-S<br>
-                FOR EDUCATIONAL PURPOSES ONLY — NOT FINANCIAL ADVICE
-            </div>
-        """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
