@@ -1686,7 +1686,7 @@ def main() -> None:
         }
         .exec-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
             gap: 16px;
         }
         .exec-block {
@@ -1778,31 +1778,31 @@ def main() -> None:
             color: #ef4444;
             border-radius: 4px;
             padding: 10px 14px;
+        .metric-value {
+            color: #E2E8F0;
+            font-size: 19px;
+            font-weight: 700;
             font-family: 'JetBrains Mono', monospace;
-            font-size: 11px;
-            letter-spacing: 1px;
+            line-height: 1.2;
         }
 
-        .stButton > button {
-            background: linear-gradient(135deg, #07111f, #0a1626) !important;
-            border: 1px solid #1a2840 !important;
-            color: #67e8f9 !important;
-            border-radius: 4px !important;
+        div[data-testid="stMetricValue"] {
             font-family: 'JetBrains Mono', monospace !important;
-            font-size: 11px !important;
-            letter-spacing: 1.5px !important;
+            font-size: 1.25em !important;
+            font-weight: 700 !important;
+            color: #67e8f9 !important;
+            word-break: break-word !important;
+        }
+        div[data-testid="stMetricLabel"] {
+            font-size: 10px !important;
             text-transform: uppercase !important;
-            font-weight: 600 !important;
-            transition: all 0.15s ease !important;
+            letter-spacing: 1px !important;
+            color: #475569 !important;
+            font-family: 'JetBrains Mono', monospace !important;
+            white-space: normal !important;
+            word-wrap: break-word !important;
         }
-        .stButton > button:hover {
-            background: linear-gradient(135deg, #0d1c35, #0f2040) !important;
-            border-color: #67e8f9 !important;
-            box-shadow: 0 0 12px rgba(103,232,249,0.15) !important;
-        }
-
-        div[role="radiogroup"] label {
-            color: #64748b !important;
+        div[data-testid="stMetricDelta"] {
             font-size: 11px !important;
             font-family: 'JetBrains Mono', monospace !important;
         }
@@ -1867,6 +1867,43 @@ def main() -> None:
         }
         
         .stPlotlyChart { border-radius: 4px; overflow: hidden; }
+
+        /* ================= RESPONSIVE / MOBILE CSS ================= */
+        @media (max-width: 768px) {
+            .block-container {
+                padding: 1rem 0.5rem !important;
+            }
+            .top-header-container {
+                gap: 8px !important;
+            }
+            .top-header-title {
+                font-size: 16px !important;
+                letter-spacing: 1.5px !important;
+            }
+            .top-header-tag {
+                font-size: 10px !important;
+                padding: 2px 6px !important;
+            }
+            .exec-grid {
+                grid-template-columns: 1fr !important;
+            }
+            .metric-value, div[data-testid="stMetricValue"] {
+                font-size: 1.15em !important;
+            }
+            .greek-card {
+                padding: 8px 10px 6px;
+            }
+            .section-header-wrap {
+                padding: 6px 10px;
+            }
+            .section-title {
+                font-size: 10px;
+                letter-spacing: 1.5px;
+            }
+            div[data-testid="stVerticalBlockBorderWrapper"] {
+                padding: 4px !important;
+            }
+        }
         </style>
     """, unsafe_allow_html=True)
 
@@ -1913,17 +1950,17 @@ def main() -> None:
         live_tag = "⬤ LIVE" if HAS_AUTOREFRESH else "⬤ ONLINE"
         live_color = "#22c55e" if HAS_AUTOREFRESH else "#fbbf24"
         st.markdown(f"""
-            <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:14px;">
-                <div style="font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;
+            <div class="top-header-container" style="display:flex;align-items:baseline;gap:14px;margin-bottom:14px;flex-wrap:wrap;">
+                <div class="top-header-title" style="font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;
                             color:#F1F5F9;letter-spacing:3px;text-transform:uppercase;">
                     ALADDIN // QUANT TERMINAL
                 </div>
-                <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#67e8f9;
+                <div class="top-header-tag" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#67e8f9;
                             letter-spacing:1px;border:1px solid rgba(103,232,249,0.25);
                             padding:2px 10px;border-radius:3px;background:rgba(103,232,249,0.05);">
                     {selected_name.upper()}
                 </div>
-                <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:{live_color};letter-spacing:1px;">
+                <div class="top-header-tag" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:{live_color};letter-spacing:1px;">
                     {live_tag}
                 </div>
             </div>
