@@ -561,33 +561,35 @@ def render_pre_market_analysis(ticker: str, is_crypto: bool, asset_class: str, c
         
         st.divider()
 
-        # Automated Pre-Market Synthesis (Replaced HTML grids with native Streamlit Columns)
-        st.markdown("#### 🤖 AI PRE-MARKET SYNTHESIS & TRADE PLAN")
-        pm_col1, pm_col2 = st.columns(2)
-        
-        with pm_col1:
-            st.markdown(f"""
-            <div style="background:rgba(255,255,255,0.02); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
-                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Global Macro Regime</div>
-                <div style="font-size:16px; font-weight:700; color:{macro_color}; margin-bottom:8px;">{macro_bias}</div>
-                <div style="font-size:12px; color:#94a3b8; line-height:1.5;">{macro_desc}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-        with pm_col2:
-            st.markdown(f"""
-            <div style="background:rgba(255,255,255,0.02); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
-                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Opening Action Plan</div>
-                <div style="font-size:14px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{gap_bias}</div>
-                <div style="font-size:12px; color:#94a3b8; line-height:1.5;">
-                    <strong>Bull Trigger:</strong> Sustained trading above Resistance at {currency}{prev_high:,.2f}<br>
-                    <strong>Bear Trigger:</strong> Breakdown below Support at {currency}{prev_low:,.2f}<br>
-                    <strong>Daily Pivot:</strong> {currency}{pivot:,.2f}
+        # Automated Pre-Market Synthesis (Using custom HTML grids updated for responsiveness)
+        st.markdown(f"""
+            <div style="background:linear-gradient(145deg, #07101e, #0a1626); border:1px solid #1a2840; border-radius:6px; padding:15px; margin-bottom:20px;">
+                <h3 style="color:#67e8f9; font-size:14px; margin-bottom:15px; display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:18px;">🤖</span> AI PRE-MARKET SYNTHESIS & TRADE PLAN
+                </h3>
+                
+                <div class="pm-grid">
+                    <!-- Macro Context -->
+                    <div style="background:rgba(255,255,255,0.02); padding:15px; border-radius:4px; border:1px solid #111c2e;">
+                        <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Global Macro Regime</div>
+                        <div style="font-size:14px; font-weight:700; color:{macro_color}; margin-bottom:8px;">{macro_bias}</div>
+                        <div style="font-size:11px; color:#94a3b8; line-height:1.5;">{macro_desc}</div>
+                    </div>
+                    
+                    <!-- Execution Plan -->
+                    <div style="background:rgba(255,255,255,0.02); padding:15px; border-radius:4px; border:1px solid #111c2e;">
+                        <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Opening Action Plan</div>
+                        <div style="font-size:13px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{gap_bias}</div>
+                        <div style="font-size:11px; color:#94a3b8; line-height:1.5;">
+                            <strong>Bull Trigger:</strong> Above {currency}{prev_high:,.2f}<br>
+                            <strong>Bear Trigger:</strong> Below {currency}{prev_low:,.2f}<br>
+                            <strong>Daily Pivot:</strong> {currency}{pivot:,.2f}
+                        </div>
+                    </div>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
             
-        st.write("") # Spacer
         render_nlp_sentiment(ticker, is_crypto)
     else:
         st.warning("Pre-market asset data unavailable.")
@@ -674,38 +676,38 @@ def render_post_market_analysis(ticker: str, is_crypto: bool, asset_class: str, 
         
         st.divider()
 
-        # Automated Post-Market Synthesis (Replaced HTML grids with native Streamlit Columns)
-        st.markdown("#### 🌃 AI POST-MARKET E.O.D. VERDICT")
-        eod_col1, eod_col2, eod_col3 = st.columns(3)
-        
-        with eod_col1:
-            st.markdown(f"""
-            <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
-                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Price Action</div>
-                <div style="font-size:14px; font-weight:700; color:{c_color}; margin-bottom:8px;">{candle_bias}</div>
-                <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{candle_desc}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-        with eod_col2:
-            st.markdown(f"""
-            <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
-                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Volume Flow</div>
-                <div style="font-size:14px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{vol_conviction}</div>
-                <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{vol_desc}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-        with eod_col3:
-            st.markdown(f"""
-            <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
-                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">ATR State</div>
-                <div style="font-size:14px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{atr_bias}</div>
-                <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{atr_desc}</div>
-            </div>
-            """, unsafe_allow_html=True)
+        # Automated Post-Market Synthesis (Using custom HTML grids updated for responsiveness)
+        st.markdown(f"""
+            <div style="background:linear-gradient(145deg, #070d1a, #0b1524); border:1px solid #1a2840; border-radius:6px; padding:15px; margin-bottom:20px;">
+                <h3 style="color:#a78bfa; font-size:14px; margin-bottom:15px; display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:18px;">🌃</span> AI POST-MARKET E.O.D. VERDICT
+                </h3>
+                
+                <div class="eod-grid">
+                    <!-- Price Action -->
+                    <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e;">
+                        <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Price Action</div>
+                        <div style="font-size:13px; font-weight:700; color:{c_color}; margin-bottom:8px;">{candle_bias}</div>
+                        <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{candle_desc}</div>
+                    </div>
+                    
+                    <!-- Volume Flow -->
+                    <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e;">
+                        <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Volume Flow</div>
+                        <div style="font-size:13px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{vol_conviction}</div>
+                        <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{vol_desc}</div>
+                    </div>
 
-        st.write("") # Spacer
+                    <!-- Volatility state -->
+                    <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e;">
+                        <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">ATR State</div>
+                        <div style="font-size:13px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{atr_bias}</div>
+                        <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{atr_desc}</div>
+                    </div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
         col1, col2 = st.columns(2)
         with col1:
             render_expected_move(ticker, ticker, asset_class, currency, trading_days, is_crypto)
@@ -1634,6 +1636,7 @@ def main() -> None:
             font-size: 1.25em !important;
             font-weight: 700 !important;
             color: #67e8f9 !important;
+            word-break: break-word !important;
         }
         div[data-testid="stMetricLabel"] {
             font-size: 10px !important;
@@ -1641,6 +1644,8 @@ def main() -> None:
             letter-spacing: 1px !important;
             color: #475569 !important;
             font-family: 'JetBrains Mono', monospace !important;
+            white-space: normal !important;
+            word-wrap: break-word !important;
         }
         div[data-testid="stMetricDelta"] {
             font-size: 11px !important;
@@ -1778,31 +1783,31 @@ def main() -> None:
             color: #ef4444;
             border-radius: 4px;
             padding: 10px 14px;
-        .metric-value {
-            color: #E2E8F0;
-            font-size: 19px;
-            font-weight: 700;
             font-family: 'JetBrains Mono', monospace;
-            line-height: 1.2;
+            font-size: 11px;
+            letter-spacing: 1px;
         }
 
-        div[data-testid="stMetricValue"] {
-            font-family: 'JetBrains Mono', monospace !important;
-            font-size: 1.25em !important;
-            font-weight: 700 !important;
+        .stButton > button {
+            background: linear-gradient(135deg, #07111f, #0a1626) !important;
+            border: 1px solid #1a2840 !important;
             color: #67e8f9 !important;
-            word-break: break-word !important;
-        }
-        div[data-testid="stMetricLabel"] {
-            font-size: 10px !important;
-            text-transform: uppercase !important;
-            letter-spacing: 1px !important;
-            color: #475569 !important;
+            border-radius: 4px !important;
             font-family: 'JetBrains Mono', monospace !important;
-            white-space: normal !important;
-            word-wrap: break-word !important;
+            font-size: 11px !important;
+            letter-spacing: 1.5px !important;
+            text-transform: uppercase !important;
+            font-weight: 600 !important;
+            transition: all 0.15s ease !important;
         }
-        div[data-testid="stMetricDelta"] {
+        .stButton > button:hover {
+            background: linear-gradient(135deg, #0d1c35, #0f2040) !important;
+            border-color: #67e8f9 !important;
+            box-shadow: 0 0 12px rgba(103,232,249,0.15) !important;
+        }
+
+        div[role="radiogroup"] label {
+            color: #64748b !important;
             font-size: 11px !important;
             font-family: 'JetBrains Mono', monospace !important;
         }
@@ -1868,41 +1873,42 @@ def main() -> None:
         
         .stPlotlyChart { border-radius: 4px; overflow: hidden; }
 
-        /* ================= RESPONSIVE / MOBILE CSS ================= */
+        /* Custom Grids for Pre/Post Market */
+        .pm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .eod-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; }
+
+        /* ================= ULTRA-RESPONSIVE / MOBILE CSS ================= */
         @media (max-width: 768px) {
-            .block-container {
-                padding: 1rem 0.5rem !important;
+            /* 1. Tighten Main Layout */
+            .block-container { padding: 0.8rem 0.5rem !important; }
+            
+            /* 2. Compact Header */
+            .top-header-container { flex-direction: column !important; gap: 6px !important; align-items: flex-start !important; }
+            .top-header-title { font-size: 15px !important; letter-spacing: 1px !important; margin-bottom: 2px !important; }
+            .top-header-tag { font-size: 9px !important; padding: 2px 6px !important; display: inline-block !important; margin-bottom: 4px !important;}
+            
+            /* 3. Collapse All Grids to 1 Column */
+            .exec-grid, .pm-grid, .eod-grid { 
+                grid-template-columns: 1fr !important; 
+                gap: 10px !important; 
             }
-            .top-header-container {
-                gap: 8px !important;
-            }
-            .top-header-title {
-                font-size: 16px !important;
-                letter-spacing: 1.5px !important;
-            }
-            .top-header-tag {
-                font-size: 10px !important;
-                padding: 2px 6px !important;
-            }
-            .exec-grid {
-                grid-template-columns: 1fr !important;
-            }
-            .metric-value, div[data-testid="stMetricValue"] {
-                font-size: 1.15em !important;
-            }
-            .greek-card {
-                padding: 8px 10px 6px;
-            }
-            .section-header-wrap {
-                padding: 6px 10px;
-            }
-            .section-title {
-                font-size: 10px;
-                letter-spacing: 1.5px;
-            }
-            div[data-testid="stVerticalBlockBorderWrapper"] {
-                padding: 4px !important;
-            }
+            
+            /* 4. Shrink Cards & Borders */
+            .exec-block, .module-card, .greek-card { padding: 10px 12px !important; margin-bottom: 8px !important; }
+            [data-testid="stVerticalBlockBorderWrapper"] { padding: 8px !important; border-radius: 4px !important; }
+            .section-header-wrap { padding: 6px 10px !important; margin-bottom: 12px !important; }
+            .section-title { font-size: 10px !important; letter-spacing: 1px !important; }
+            
+            /* 5. Shrink Massive Metrics & Inputs */
+            div[data-testid="stMetricValue"] { font-size: 16px !important; }
+            div[data-testid="stMetricLabel"] { font-size: 9px !important; }
+            div[data-testid="stMetricDelta"] { font-size: 10px !important; }
+            div[data-testid="stNumberInput"] label { font-size: 9px !important; }
+            div[data-testid="stNumberInput"] input { font-size: 12px !important; height: 32px !important; min-height: 32px !important; }
+            
+            /* 6. Compact & Scrollable Tabs */
+            .stTabs [data-baseweb="tab-list"] { gap: 10px !important; overflow-x: auto !important; padding-bottom: 4px !important; }
+            .stTabs [data-baseweb="tab"] { height: 38px !important; font-size: 10px !important; padding: 6px 10px !important; white-space: nowrap !important; }
         }
         </style>
     """, unsafe_allow_html=True)
