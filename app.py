@@ -561,33 +561,35 @@ def render_pre_market_analysis(ticker: str, is_crypto: bool, asset_class: str, c
         
         st.divider()
 
-        # Automated Pre-Market Synthesis (Replaced HTML grids with native Streamlit Columns)
-        st.markdown("#### 🤖 AI PRE-MARKET SYNTHESIS & TRADE PLAN")
-        pm_col1, pm_col2 = st.columns(2)
-        
-        with pm_col1:
-            st.markdown(f"""
-            <div style="background:rgba(255,255,255,0.02); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
-                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Global Macro Regime</div>
-                <div style="font-size:16px; font-weight:700; color:{macro_color}; margin-bottom:8px;">{macro_bias}</div>
-                <div style="font-size:12px; color:#94a3b8; line-height:1.5;">{macro_desc}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-        with pm_col2:
-            st.markdown(f"""
-            <div style="background:rgba(255,255,255,0.02); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
-                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Opening Action Plan</div>
-                <div style="font-size:14px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{gap_bias}</div>
-                <div style="font-size:12px; color:#94a3b8; line-height:1.5;">
-                    <strong>Bull Trigger:</strong> Sustained trading above Resistance at {currency}{prev_high:,.2f}<br>
-                    <strong>Bear Trigger:</strong> Breakdown below Support at {currency}{prev_low:,.2f}<br>
-                    <strong>Daily Pivot:</strong> {currency}{pivot:,.2f}
+        # Automated Pre-Market Synthesis (Using custom HTML grids updated for responsiveness)
+        st.markdown(f"""
+            <div style="background:linear-gradient(145deg, #07101e, #0a1626); border:1px solid #1a2840; border-radius:6px; padding:15px; margin-bottom:20px;">
+                <h3 style="color:#67e8f9; font-size:14px; margin-bottom:15px; display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:18px;">🤖</span> AI PRE-MARKET SYNTHESIS & TRADE PLAN
+                </h3>
+                
+                <div class="pm-grid">
+                    <!-- Macro Context -->
+                    <div style="background:rgba(255,255,255,0.02); padding:15px; border-radius:4px; border:1px solid #111c2e;">
+                        <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Global Macro Regime</div>
+                        <div style="font-size:14px; font-weight:700; color:{macro_color}; margin-bottom:8px;">{macro_bias}</div>
+                        <div style="font-size:11px; color:#94a3b8; line-height:1.5;">{macro_desc}</div>
+                    </div>
+                    
+                    <!-- Execution Plan -->
+                    <div style="background:rgba(255,255,255,0.02); padding:15px; border-radius:4px; border:1px solid #111c2e;">
+                        <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Opening Action Plan</div>
+                        <div style="font-size:13px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{gap_bias}</div>
+                        <div style="font-size:11px; color:#94a3b8; line-height:1.5;">
+                            <strong>Bull Trigger:</strong> Above {currency}{prev_high:,.2f}<br>
+                            <strong>Bear Trigger:</strong> Below {currency}{prev_low:,.2f}<br>
+                            <strong>Daily Pivot:</strong> {currency}{pivot:,.2f}
+                        </div>
+                    </div>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
             
-        st.write("") # Spacer
         render_nlp_sentiment(ticker, is_crypto)
     else:
         st.warning("Pre-market asset data unavailable.")
@@ -674,38 +676,38 @@ def render_post_market_analysis(ticker: str, is_crypto: bool, asset_class: str, 
         
         st.divider()
 
-        # Automated Post-Market Synthesis (Replaced HTML grids with native Streamlit Columns)
-        st.markdown("#### 🌃 AI POST-MARKET E.O.D. VERDICT")
-        eod_col1, eod_col2, eod_col3 = st.columns(3)
-        
-        with eod_col1:
-            st.markdown(f"""
-            <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
-                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Price Action</div>
-                <div style="font-size:14px; font-weight:700; color:{c_color}; margin-bottom:8px;">{candle_bias}</div>
-                <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{candle_desc}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-        with eod_col2:
-            st.markdown(f"""
-            <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
-                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Volume Flow</div>
-                <div style="font-size:14px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{vol_conviction}</div>
-                <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{vol_desc}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-        with eod_col3:
-            st.markdown(f"""
-            <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e; height: 100%;">
-                <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">ATR State</div>
-                <div style="font-size:14px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{atr_bias}</div>
-                <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{atr_desc}</div>
-            </div>
-            """, unsafe_allow_html=True)
+        # Automated Post-Market Synthesis (Using custom HTML grids updated for responsiveness)
+        st.markdown(f"""
+            <div style="background:linear-gradient(145deg, #070d1a, #0b1524); border:1px solid #1a2840; border-radius:6px; padding:15px; margin-bottom:20px;">
+                <h3 style="color:#a78bfa; font-size:14px; margin-bottom:15px; display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:18px;">🌃</span> AI POST-MARKET E.O.D. VERDICT
+                </h3>
+                
+                <div class="eod-grid">
+                    <!-- Price Action -->
+                    <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e;">
+                        <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Price Action</div>
+                        <div style="font-size:13px; font-weight:700; color:{c_color}; margin-bottom:8px;">{candle_bias}</div>
+                        <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{candle_desc}</div>
+                    </div>
+                    
+                    <!-- Volume Flow -->
+                    <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e;">
+                        <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">Volume Flow</div>
+                        <div style="font-size:13px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{vol_conviction}</div>
+                        <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{vol_desc}</div>
+                    </div>
 
-        st.write("") # Spacer
+                    <!-- Volatility state -->
+                    <div style="background:rgba(255,255,255,0.015); padding:15px; border-radius:4px; border:1px solid #111c2e;">
+                        <div style="font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; margin-bottom:5px;">ATR State</div>
+                        <div style="font-size:13px; font-weight:700; color:#E2E8F0; margin-bottom:8px;">{atr_bias}</div>
+                        <div style="font-size:11px; color:#94a3b8; line-height:1.4;">{atr_desc}</div>
+                    </div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
         col1, col2 = st.columns(2)
         with col1:
             render_expected_move(ticker, ticker, asset_class, currency, trading_days, is_crypto)
@@ -1545,516 +1547,4 @@ def main() -> None:
             border-radius: 4px !important;
             color: #E2E8F0 !important;
         }
-        [data-testid="stSidebar"] [data-testid="stRadio"] { margin-bottom: 6px; }
-        [data-testid="stSidebar"] hr { border-color: #111c2e !important; margin: 12px 0 !important; }
-
-        .block-container {
-            padding: 1.2rem 1.5rem 2rem !important;
-            max-width: 100% !important;
-        }
-
-        h1 {
-            font-family: 'JetBrains Mono', monospace !important;
-            font-size: 19px !important;
-            font-weight: 700 !important;
-            color: #F1F5F9 !important;
-            letter-spacing: 3px !important;
-            text-transform: uppercase !important;
-            border-bottom: 1px solid #111c2e;
-            padding-bottom: 12px;
-            margin-bottom: 4px !important;
-        }
-
-        .section-header-wrap {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 16px;
-            margin-top: 4px;
-            padding: 8px 14px;
-            background: linear-gradient(90deg, rgba(103,232,249,0.06) 0%, rgba(103,232,249,0.01) 100%);
-            border-left: 3px solid #67e8f9;
-            border-radius: 0 4px 4px 0;
-        }
-        .section-num {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 10px;
-            color: #67e8f9;
-            background: rgba(103,232,249,0.1);
-            padding: 2px 7px;
-            border-radius: 3px;
-            font-weight: 700;
-            display: none;
-        }
-        .section-num:not(:empty) { display: inline-block; }
-        .section-icon { font-size: 14px; color: #67e8f9; }
-        .section-title {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 11px;
-            font-weight: 700;
-            color: #94a3b8;
-            text-transform: uppercase;
-            letter-spacing: 2.5px;
-        }
-
-        [data-testid="stVerticalBlockBorderWrapper"] {
-            border: 1px solid #111c2e !important;
-            background: linear-gradient(145deg, #070d1a 0%, #040a14 100%) !important;
-            border-radius: 6px !important;
-            padding: 6px !important;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.45), 0 1px 0 rgba(103,232,249,0.04) inset !important;
-        }
-        .module-card {
-            background: linear-gradient(145deg, #0b1524, #07101e);
-            border: 1px solid #111c2e;
-            border-top: 2px solid rgba(103,232,249,0.3);
-            padding: 14px 16px;
-            border-radius: 5px;
-            margin-bottom: 12px;
-        }
-        .metric-label {
-            color: #475569;
-            font-size: 10px;
-            text-transform: uppercase;
-            letter-spacing: 1.5px;
-            font-weight: 600;
-            margin-bottom: 4px;
-            font-family: 'JetBrains Mono', monospace;
-        }
-        .metric-value {
-            color: #E2E8F0;
-            font-size: 19px;
-            font-weight: 700;
-            font-family: 'JetBrains Mono', monospace;
-            line-height: 1.2;
-        }
-
-        div[data-testid="stMetricValue"] {
-            font-family: 'JetBrains Mono', monospace !important;
-            font-size: 1.25em !important;
-            font-weight: 700 !important;
-            color: #67e8f9 !important;
-        }
-        div[data-testid="stMetricLabel"] {
-            font-size: 10px !important;
-            text-transform: uppercase !important;
-            letter-spacing: 1px !important;
-            color: #475569 !important;
-            font-family: 'JetBrains Mono', monospace !important;
-        }
-        div[data-testid="stMetricDelta"] {
-            font-size: 11px !important;
-            font-family: 'JetBrains Mono', monospace !important;
-        }
-        [data-testid="stMetricDeltaIcon-Up"] { color: #22c55e !important; }
-        [data-testid="stMetricDeltaIcon-Down"] { color: #ef4444 !important; }
-
-        .exec-summary-card {
-            background: linear-gradient(135deg, #07111f 0%, #050d18 60%, #060f1c 100%);
-            border: 1px solid #1a2840;
-            border-top: 2px solid #67e8f9;
-            border-radius: 6px;
-            padding: 20px 22px;
-            margin-bottom: 6px;
-            box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 1px 0 rgba(103,232,249,0.08) inset;
-        }
-        .exec-summary-header {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 10px;
-            font-weight: 700;
-            color: #64748b;
-            letter-spacing: 2.5px;
-            text-transform: uppercase;
-            margin-bottom: 18px;
-            border-bottom: 1px solid #0f1e35;
-            padding-bottom: 12px;
-        }
-        .exec-dot {
-            display: inline-block;
-            width: 7px; height: 7px;
-            border-radius: 50%;
-            background: #22c55e;
-            box-shadow: 0 0 6px #22c55e88;
-            animation: pulse-dot 2s infinite;
-        }
-        @keyframes pulse-dot {
-            0%, 100% { opacity: 1; box-shadow: 0 0 6px #22c55e88; }
-            50% { opacity: 0.4; box-shadow: 0 0 2px #22c55e22; }
-        }
-        .exec-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-            gap: 16px;
-        }
-        .exec-block {
-            padding: 14px 16px;
-            background: rgba(255,255,255,0.015);
-            border: 1px solid #111c2e;
-            border-radius: 5px;
-        }
-        .exec-block-label {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 9px;
-            font-weight: 700;
-            color: #334155;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            margin-bottom: 6px;
-        }
-        .exec-signal {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 14px;
-            font-weight: 700;
-            letter-spacing: 1px;
-            margin-bottom: 8px;
-        }
-        .exec-sub {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 10px;
-            font-weight: 600;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            margin: 8px 0 4px 0;
-        }
-        .exec-block-text {
-            font-size: 12px;
-            color: #94a3b8;
-            line-height: 1.6;
-            word-wrap: break-word;
-        }
-        .exec-block-text strong {
-            font-weight: 700;
-            color: #67e8f9;
-        }
-
-        .news-section-label {
-            color: #334155;
-            font-size: 9px;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: 700;
-            margin: 10px 0 8px 0;
-        }
-        .news-headline {
-            background: rgba(10,18,32,0.8);
-            border-radius: 4px;
-            padding: 8px 10px 8px 14px;
-            margin-bottom: 7px;
-        }
-        .news-title {
-            font-size: 12px;
-            color: #C8D1DC;
-            line-height: 1.45;
-            margin-bottom: 4px;
-        }
-        .news-meta {
-            font-size: 9px;
-            font-family: 'JetBrains Mono', monospace;
-            letter-spacing: 0.5px;
-        }
-
-        .greek-card {
-            border-radius: 5px;
-            padding: 10px 14px 8px;
-            margin-bottom: 10px;
-            border: 1px solid #111c2e;
-        }
-        .greek-title {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            margin-bottom: 2px;
-        }
-
-        .module-offline {
-            background: rgba(239,68,68,0.06);
-            border: 1px solid rgba(239,68,68,0.2);
-            color: #ef4444;
-            border-radius: 4px;
-            padding: 10px 14px;
-        .metric-value {
-            color: #E2E8F0;
-            font-size: 19px;
-            font-weight: 700;
-            font-family: 'JetBrains Mono', monospace;
-            line-height: 1.2;
-        }
-
-        div[data-testid="stMetricValue"] {
-            font-family: 'JetBrains Mono', monospace !important;
-            font-size: 1.25em !important;
-            font-weight: 700 !important;
-            color: #67e8f9 !important;
-            word-break: break-word !important;
-        }
-        div[data-testid="stMetricLabel"] {
-            font-size: 10px !important;
-            text-transform: uppercase !important;
-            letter-spacing: 1px !important;
-            color: #475569 !important;
-            font-family: 'JetBrains Mono', monospace !important;
-            white-space: normal !important;
-            word-wrap: break-word !important;
-        }
-        div[data-testid="stMetricDelta"] {
-            font-size: 11px !important;
-            font-family: 'JetBrains Mono', monospace !important;
-        }
-        div[role="radiogroup"] label[data-baseweb="radio"] { background: transparent !important; }
-
-        div[data-testid="stNumberInput"] input {
-            background: #06101d !important;
-            border: 1px solid #1a2840 !important;
-            border-radius: 4px !important;
-            color: #67e8f9 !important;
-            font-family: 'JetBrains Mono', monospace !important;
-            font-size: 13px !important;
-        }
-
-        div[data-testid="stAlert"] {
-            background: rgba(103,232,249,0.04) !important;
-            border: 1px solid rgba(103,232,249,0.12) !important;
-            border-radius: 5px !important;
-            color: #94a3b8 !important;
-            font-size: 12px !important;
-        }
-
-        div[data-testid="stSpinner"] > div {
-            border-top-color: #67e8f9 !important;
-        }
-
-        hr { border-color: #0f1e35 !important; margin: 1.2em 0 !important; }
-
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: #040810; }
-        ::-webkit-scrollbar-thumb { background: #1a2840; border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: #253758; }
-
-        h2, h3 {
-            font-family: 'JetBrains Mono', monospace !important;
-            font-size: 13px !important;
-            font-weight: 700 !important;
-            color: #94a3b8 !important;
-            letter-spacing: 2px !important;
-            text-transform: uppercase !important;
-        }
-
-        /* Customizing Streamlit Tabs */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 24px;
-            background-color: transparent;
-        }
-        .stTabs [data-baseweb="tab"] {
-            height: 50px;
-            white-space: pre-wrap;
-            background-color: transparent;
-            border-radius: 4px 4px 0px 0px;
-            padding-top: 10px;
-            padding-bottom: 10px;
-            font-family: 'JetBrains Mono', monospace !important;
-            color: #64748b;
-        }
-        .stTabs [aria-selected="true"] {
-            background-color: rgba(103,232,249,0.05);
-            border-bottom: 2px solid #67e8f9 !important;
-            color: #F1F5F9 !important;
-        }
-        
-        .stPlotlyChart { border-radius: 4px; overflow: hidden; }
-
-        /* ================= RESPONSIVE / MOBILE CSS ================= */
-        @media (max-width: 768px) {
-            .block-container {
-                padding: 1rem 0.5rem !important;
-            }
-            .top-header-container {
-                gap: 8px !important;
-            }
-            .top-header-title {
-                font-size: 16px !important;
-                letter-spacing: 1.5px !important;
-            }
-            .top-header-tag {
-                font-size: 10px !important;
-                padding: 2px 6px !important;
-            }
-            .exec-grid {
-                grid-template-columns: 1fr !important;
-            }
-            .metric-value, div[data-testid="stMetricValue"] {
-                font-size: 1.15em !important;
-            }
-            .greek-card {
-                padding: 8px 10px 6px;
-            }
-            .section-header-wrap {
-                padding: 6px 10px;
-            }
-            .section-title {
-                font-size: 10px;
-                letter-spacing: 1.5px;
-            }
-            div[data-testid="stVerticalBlockBorderWrapper"] {
-                padding: 4px !important;
-            }
-        }
-        </style>
-    """, unsafe_allow_html=True)
-
-    # SIDEBAR
-    with st.sidebar:
-        st.title("⚡ ALADDIN v22.0")
-
-        sync_col1, sync_col2 = st.columns([3, 1])
-        with sync_col1:
-            if st.button("↻ Force Sync", use_container_width=True):
-                st.session_state.market_data = {}
-                st.cache_data.clear()
-                st.rerun()
-        with sync_col2:
-            status_label = "●" if HAS_AUTOREFRESH else "○"
-            st.markdown(
-                f'<div style="color:{"#22c55e" if HAS_AUTOREFRESH else "#ef4444"};font-size:20px;text-align:center;padding-top:5px;">{status_label}</div>',
-                unsafe_allow_html=True
-            )
-
-        st.divider()
-        asset_class = st.radio("Asset Class", ["Indian Equities", "Crypto"])
-        is_crypto = (asset_class == "Crypto")
-
-        if not is_crypto:
-            ASSET_DICT = INDIAN_ASSETS
-            div1, div2, div1_name, div2_name, currency, trading_days = "^NSEI", "^NSEBANK", "Nifty 50", "Bank Nifty", "₹", 252
-        else:
-            ASSET_DICT = CRYPTO_ASSETS
-            div1, div2, div1_name, div2_name, currency, trading_days = "BTC-USD", "ETH-USD", "Bitcoin", "Ethereum", "$", 365
-
-        selected_name = st.selectbox("Target Asset", options=list(ASSET_DICT.keys()), index=0)
-        ticker = ASSET_DICT[selected_name]
-
-        st.divider()
-        st.markdown(
-            '<div style="font-family:JetBrains Mono;font-size:9px;color:#1e3a5f;text-align:center;letter-spacing:1px;">EMA 89 · EMA 21 · VWAP · RSI(14)<br>YANG-ZHANG · HURST · VRP<br>VPIN · XGBOOST ML · BLACK-SCHOLES</div>',
-            unsafe_allow_html=True
-        )
-
-    # PAGE HEADER
-    h_col1, h_col2 = st.columns([5, 1])
-    with h_col1:
-        live_tag = "⬤ LIVE" if HAS_AUTOREFRESH else "⬤ ONLINE"
-        live_color = "#22c55e" if HAS_AUTOREFRESH else "#fbbf24"
-        st.markdown(f"""
-            <div class="top-header-container" style="display:flex;align-items:baseline;gap:14px;margin-bottom:14px;flex-wrap:wrap;">
-                <div class="top-header-title" style="font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;
-                            color:#F1F5F9;letter-spacing:3px;text-transform:uppercase;">
-                    ALADDIN // QUANT TERMINAL
-                </div>
-                <div class="top-header-tag" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#67e8f9;
-                            letter-spacing:1px;border:1px solid rgba(103,232,249,0.25);
-                            padding:2px 10px;border-radius:3px;background:rgba(103,232,249,0.05);">
-                    {selected_name.upper()}
-                </div>
-                <div class="top-header-tag" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:{live_color};letter-spacing:1px;">
-                    {live_tag}
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-
-    # CREATE TABS
-    tab_live, tab_pre, tab_post = st.tabs(["🔴 LIVE MATRIX", "🌅 PRE-MARKET PREP", "🌃 POST-MARKET WRAP"])
-
-    with tab_live:
-        with st.spinner("Initialising Aladdin quantitative matrix…"):
-            
-            # ROW 0: EXECUTIVE SUMMARY
-            safe_render(
-                render_executive_summary,
-                selected_name, ticker, asset_class,
-                div1, div2, div1_name, div2_name,
-                currency, trading_days, is_crypto
-            )
-
-            # ROW 1: REALTIME CHART & NLP
-            tab_row1_c1, tab_row1_c2 = st.columns([2, 1])
-            with tab_row1_c1:
-                with st.container(border=True):
-                    safe_render(render_realtime_chart, selected_name, ticker, is_crypto)
-            with tab_row1_c2:
-                with st.container(border=True):
-                    safe_render(render_nlp_sentiment, ticker, is_crypto)
-
-            # ROW 2: IV RANK, EXPECTED MOVE, DIVERGENCE
-            col_row2_1, col_row2_2, col_row2_3 = st.columns(3)
-            with col_row2_1:
-                with st.container(border=True):
-                    safe_render(render_volatility_metrics, asset_class, ticker, is_crypto)
-            with col_row2_2:
-                with st.container(border=True):
-                    safe_render(render_expected_move, selected_name, ticker, asset_class, currency, trading_days, is_crypto)
-            with col_row2_3:
-                with st.container(border=True):
-                    safe_render(render_index_divergence, div1, div2, div1_name, div2_name, currency, is_crypto)
-
-            # ROW 3: VOL CONE & VRP
-            col_row3_1, col_row3_2 = st.columns(2)
-            with col_row3_1:
-                with st.container(border=True):
-                    safe_render(render_volatility_cone, selected_name, ticker, trading_days, is_crypto)
-            with col_row3_2:
-                with st.container(border=True):
-                    safe_render(render_vrp, selected_name, ticker, asset_class, trading_days, is_crypto)
-
-            # ROW 4: HURST & YANG-ZHANG
-            col_row4_1, col_row4_2 = st.columns(2)
-            with col_row4_1:
-                with st.container(border=True):
-                    safe_render(render_hurst_regime, selected_name, ticker, is_crypto)
-            with col_row4_2:
-                with st.container(border=True):
-                    safe_render(render_advanced_volatility, selected_name, ticker, trading_days, is_crypto)
-
-            # ROW 5: MICROSTRUCTURE
-            with st.container(border=True):
-                safe_render(render_microstructure, ticker, is_crypto)
-
-            # ROW 6: ML ENGINE
-            with st.container(border=True):
-                safe_render(render_ml_engine, ticker, is_crypto)
-
-            # ROW 7: PORTFOLIO RISK
-            with st.container(border=True):
-                safe_render(render_portfolio_risk, is_crypto, currency)
-
-            # ROW 8: OPTIONS GREEKS
-            with st.container(border=True):
-                safe_render(render_options_greeks, selected_name, ticker, asset_class, is_crypto)
-
-    with tab_pre:
-        with st.container(border=True):
-            safe_render(render_pre_market_analysis, ticker, is_crypto, asset_class, currency)
-
-    with tab_post:
-        with st.container(border=True):
-            safe_render(render_post_market_analysis, ticker, is_crypto, asset_class, currency, trading_days)
-
-    # FOOTER
-    st.markdown("""
-        <div style="text-align:center;margin-top:32px;padding:16px;
-                    border-top:1px solid #0f1e35;
-                    font-family:'JetBrains Mono',monospace;
-                    font-size:9px;color:#1e3a5f;letter-spacing:2px;">
-            ALADDIN QUANT TERMINAL v22.0 &nbsp;·&nbsp; EMA(89,21) &nbsp;·&nbsp; YANG-ZHANG &nbsp;·&nbsp;
-            HURST &nbsp;·&nbsp; VRP &nbsp;·&nbsp; VPIN &nbsp;·&nbsp; XGBOOST ML &nbsp;·&nbsp; MERTON B-S<br>
-            FOR EDUCATIONAL PURPOSES ONLY — NOT FINANCIAL ADVICE
-        </div>
-    """, unsafe_allow_html=True)
-
-
-if __name__ == "__main__":
-    main()
+        [data-testid="stSidebar"] [data-testid="stRadio"] { margin-bottom:
