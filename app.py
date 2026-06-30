@@ -18,9 +18,10 @@ import yaml
 import logging
 from typing import Optional, Tuple, List, Dict, Any, Union, Callable
 
-# ML IMPORTS
-import xgboost as xgb
-from sklearn.model_selection import TimeSeriesSplit
+# DL IMPORTS (Replacing XGBoost)
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, precision_score, recall_score
 from textblob import TextBlob
@@ -47,11 +48,6 @@ class Config:
             'corr_high': 0.80,
             'corr_divergence': 0.50,
             'vrp_sellers': 0.0,
-        },
-        'ml': {
-            'n_estimators': 150,
-            'max_depth': 4,
-            'walk_forward_splits': 5,
         },
         'retry': {
             'max_attempts': 3,
@@ -149,7 +145,7 @@ def safe_get_scalar(series: Union[pd.Series, float, int, None], default: float =
 
 def add_watermark(fig: go.Figure) -> None:
     fig.add_annotation(
-        text="ALADDIN QUANT TERMINAL v26.1",
+        text="ALADDIN QUANT TERMINAL v30.0",
         xref="paper", yref="paper", x=0.99, y=0.01,
         showarrow=False, font=dict(size=9, color=CHART_THEME["watermark"]), opacity=0.5
     )
@@ -496,97 +492,160 @@ def render_nlp_sentiment(ticker: str, is_crypto: bool) -> None:
             </div>
         """, unsafe_allow_html=True)
 
-# ============================== ML ENGINE ==============================
-@st.cache_resource(ttl=3600, show_spinner=False)
-def train_and_validate_ml_model(ticker: str, is_crypto: bool):
-    df = fetch_data(ticker, period="2y", interval="1d", is_crypto=is_crypto)
+# ============================== DEEP LEARNING ENGINE (LSTM) ==============================
+def frac_diff_series(series: pd.Series, d: float = 0.4, window: int = 20) -> pd.Series:
+    """
+    Applies fractional differentiation to a Pandas Series to achieve stationarity 
+    while retaining memory. Formula approximates binomial expansion weights.
+    """
+    weights = [1.0]
+    for k in range(1, window):
+        weights.append(-weights[-1] * (d - k + 1) / k)
+    weights = np.array(weights)[::-1]
+    
+    diff = np.convolve(series, weights, mode='valid')
+    padded = np.empty_like(series)
+    padded[:] = np.nan
+    padded[window-1:] = diff
+    return pd.Series(padded, index=series.index)
 
-    if df is None or len(df) < 100 or 'Close' not in df.columns: 
+# Define PyTorch Model Architecture
+class QuantLSTM(nn.Module):
+    def __init__(self, input_size: int):
+        super(QuantLSTM, self).__init__()
+        self.lstm = nn.LSTM(input_size, 32, num_layers=2, batch_first=True, dropout=0.2)
+        self.fc = nn.Linear(32, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        out = self.fc(out[:, -1, :])  # Extract last sequence state
+        return self.sigmoid(out)
+
+@st.cache_resource(ttl=3600, show_spinner=False)
+def train_dl_model(ticker: str, is_crypto: bool):
+    # Fetch 5 years of data for deep learning model stability
+    df = fetch_data(ticker, period="5y", interval="1d", is_crypto=is_crypto)
+
+    if df is None or len(df) < 200 or 'Close' not in df.columns: 
         return None, None, None, None
 
+    # Feature Engineering (Fractional Diff replaces raw price)
+    df['Frac_Diff'] = frac_diff_series(df['Close'], d=0.4, window=20)
     df['Log_Returns'] = np.log(df['Close'] / df['Close'].shift(1))
     df['Vol_20D'] = df['Log_Returns'].rolling(20).std() * np.sqrt(252)
-    df['Momentum_10D'] = df['Close'] - df['Close'].shift(10)
     df['SMA_20_Dist'] = (df['Close'] / df['Close'].rolling(20).mean()) - 1
-    df['Target'] = np.where(df['Close'].shift(-1) > df['Close'], 1, 0)
-
-    features = ['Log_Returns', 'Vol_20D', 'Momentum_10D', 'SMA_20_Dist']
-
-    ml_data = df.dropna().copy()
-    X, y = ml_data[features], ml_data['Target']
-
-    tscv = TimeSeriesSplit(n_splits=CONFIG.get('ml', 'walk_forward_splits'), gap=5)
-    accuracies, precisions, recalls = [], [], []
-
-    xgb_params = {
-        'n_estimators': CONFIG.get('ml', 'n_estimators'), 'max_depth': CONFIG.get('ml', 'max_depth'),
-        'learning_rate': 0.05, 'objective': 'binary:logistic', 'random_state': 42,
-        'subsample': 0.8, 'colsample_bytree': 0.8, 'reg_alpha': 0.1, 'reg_lambda': 1.0,
-        'min_child_weight': 3, 'gamma': 0.1
-    }
-
-    for train_index, test_index in tscv.split(X):
-        X_train, y_train = X.iloc[train_index], y.iloc[train_index]
-        X_test, y_test = X.iloc[test_index], y.iloc[test_index]
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-        model = xgb.XGBClassifier(**xgb_params)
-        model.fit(X_train_scaled, y_train)
-        y_pred = model.predict(X_test_scaled)
-        accuracies.append(accuracy_score(y_test, y_pred))
-        precisions.append(precision_score(y_test, y_pred, zero_division=0))
-        recalls.append(recall_score(y_test, y_pred, zero_division=0))
-
-    scaler_full = StandardScaler()
-    X_full_scaled = scaler_full.fit_transform(X)
-    model_full = xgb.XGBClassifier(**xgb_params)
-    model_full.fit(X_full_scaled, y)
-
-    metrics = {"acc": np.mean(accuracies), "prec": np.mean(precisions), "rec": np.mean(recalls)}
-    return model_full, scaler_full, features, metrics
-
-def render_ml_engine(ticker: str, is_crypto: bool) -> None:
-    section_header("8", "AI PREDICTIVE ENGINE (XGBoost + Purged CV)", "◈")
     
-    model_full, scaler_full, features, metrics = train_and_validate_ml_model(ticker, is_crypto)
+    # Target: Will price be higher in exactly 5 days?
+    df['Target'] = np.where(df['Close'].shift(-5) > df['Close'], 1, 0)
+
+    features = ['Frac_Diff', 'Log_Returns', 'Vol_20D', 'SMA_20_Dist']
+    ml_data = df.dropna().copy()
+    
+    if len(ml_data) < 100: 
+        return None, None, None, None
+
+    X = ml_data[features].values
+    y = ml_data['Target'].values
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # Sequence Creation (Remembering past 60 candles)
+    seq_length = 60
+    xs, ys = [], []
+    for i in range(len(X_scaled) - seq_length):
+        xs.append(X_scaled[i:i+seq_length])
+        ys.append(y[i+seq_length])
+        
+    X_seq = np.array(xs)
+    y_seq = np.array(ys)
+
+    if len(X_seq) < 50:
+        return None, None, None, None
+
+    # Train/Test Split (80/20)
+    split = int(len(X_seq) * 0.8)
+    X_train_t = torch.FloatTensor(X_seq[:split])
+    y_train_t = torch.FloatTensor(y_seq[:split]).unsqueeze(1)
+    X_test_t = torch.FloatTensor(X_seq[split:])
+    y_test_t = torch.FloatTensor(y_seq[split:]).unsqueeze(1)
+
+    # Init Model & Optimizer
+    model = QuantLSTM(input_size=len(features))
+    criterion = nn.BCELoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.005)
+
+    # Fast Training Loop for Streamlit
+    epochs = 40
+    for epoch in range(epochs):
+        model.train()
+        optimizer.zero_grad()
+        out = model(X_train_t)
+        loss = criterion(out, y_train_t)
+        loss.backward()
+        optimizer.step()
+
+    # Validation
+    model.eval()
+    with torch.no_grad():
+        preds = model(X_test_t)
+        preds_cls = (preds > 0.5).float()
+        acc = accuracy_score(y_test_t.numpy(), preds_cls.numpy())
+        prec = precision_score(y_test_t.numpy(), preds_cls.numpy(), zero_division=0)
+        rec = recall_score(y_test_t.numpy(), preds_cls.numpy(), zero_division=0)
+
+    metrics = {"acc": acc, "prec": prec, "rec": rec}
+    return model, scaler, features, metrics
+
+def render_dl_engine(ticker: str, is_crypto: bool) -> None:
+    section_header("8", "DEEP LEARNING ENGINE (LSTM + FracDiff)", "◈")
+    
+    model_full, scaler_full, features, metrics = train_dl_model(ticker, is_crypto)
     
     if model_full is None:
-        st.warning("Insufficient historical data to train ML model.")
+        st.warning("Insufficient historical data to train LSTM neural network.")
         return
 
-    df = fetch_data(ticker, period="60d", interval="1d", is_crypto=is_crypto)
+    # Fetch live inference data
+    df = fetch_data(ticker, period="6mo", interval="1d", is_crypto=is_crypto)
 
     if df is None or df.empty or 'Close' not in df.columns:
         st.warning("Live spot data unavailable for prediction.")
         return
 
+    df['Frac_Diff'] = frac_diff_series(df['Close'], d=0.4, window=20)
     df['Log_Returns'] = np.log(df['Close'] / df['Close'].shift(1))
     df['Vol_20D'] = df['Log_Returns'].rolling(20).std() * np.sqrt(252)
-    df['Momentum_10D'] = df['Close'] - df['Close'].shift(10)
     df['SMA_20_Dist'] = (df['Close'] / df['Close'].rolling(20).mean()) - 1
 
+    # Ensure consistent features
     for f in features:
         if f not in df.columns:
             df[f] = 0.0 
 
-    live_data = df.tail(1).copy()
-    live_data = live_data[features].fillna(0.0)
+    live_data = df[features].dropna().copy()
 
-    if live_data.empty:
-        st.warning("Prediction calculation failed. Not enough live feature data.")
+    if len(live_data) < 60:
+        st.warning("Prediction calculation failed. Not enough live feature data to build a 60-day sequence.")
         return
 
-    live_scaled = scaler_full.transform(live_data)
-    prob_bullish = model_full.predict_proba(live_scaled)[0][1] * 100
-    prob_bearish = model_full.predict_proba(live_scaled)[0][0] * 100
-    prediction = "BULLISH" if prob_bullish > 50 else "BEARISH"
-    pred_color = CHART_THEME['bullish'] if prediction == "BULLISH" else CHART_THEME['bearish']
+    # Process and Predict
+    live_scaled = scaler_full.transform(live_data.values)
+    live_seq = torch.FloatTensor(live_scaled[-60:]).unsqueeze(0)
+
+    model_full.eval()
+    with torch.no_grad():
+        prob_bullish = model_full(live_seq).item() * 100
+        
+    prob_bearish = 100 - prob_bullish
+    prediction = "BULLISH (Next 5 Days)" if prob_bullish > 50 else "BEARISH (Next 5 Days)"
+    pred_color = CHART_THEME['bullish'] if prob_bullish > 50 else CHART_THEME['bearish']
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("ML Model Bias", prediction)
-    c2.metric("Up-Day Prob", f"{prob_bullish:.1f}%")
-    c3.metric("Down-Day Prob", f"{prob_bearish:.1f}%")
+    c1.metric("LSTM 5-Day Prediction", prediction)
+    c2.metric("Up Probability", f"{prob_bullish:.1f}%")
+    c3.metric("Down Probability", f"{prob_bearish:.1f}%")
 
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -614,29 +673,29 @@ def render_ml_engine(ticker: str, is_crypto: bool) -> None:
         st.plotly_chart(fig_gauge, use_container_width=True)
 
     with col2:
-        importances = model_full.feature_importances_
-        feat_imp_df = pd.DataFrame({'Feature': features, 'Importance': importances}).sort_values(by='Importance', ascending=True)
-        fig_imp = go.Figure(go.Bar(
-            x=feat_imp_df['Importance'], y=feat_imp_df['Feature'],
-            orientation='h', marker_color=CHART_THEME["secondary"],
-            marker_line_width=0, opacity=0.85
-        ))
-        fig_imp.update_layout(
-            title=dict(text="Feature Importance Weights", font=dict(size=12, color='#94a3b8')),
+        # Plot Fractional Differentiation stationary series vs raw price
+        fig_fd = make_subplots(specs=[[{"secondary_y": True}]])
+        plot_df = df.tail(100).dropna()
+        
+        fig_fd.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Close'], name='Price', line=dict(color=CHART_THEME['neutral'], width=1.5)), secondary_y=False)
+        fig_fd.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Frac_Diff'], name='Frac Diff (d=0.4)', line=dict(color=CHART_THEME['accent'], dash='dot', width=1.5)), secondary_y=True)
+        
+        fig_fd.update_layout(
+            title=dict(text="Stationarity: Raw Price vs Fractionally Differentiated", font=dict(size=11, color='#94a3b8')),
             template=CHART_THEME["template"], height=260,
-            xaxis_title="Weight",
+            margin=dict(l=10, r=10, t=40, b=10),
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            margin=dict(l=10, r=10, t=40, b=10)
+            showlegend=False
         )
-        fig_imp.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.05)')
-        fig_imp.update_yaxes(showgrid=False)
-        st.plotly_chart(fig_imp, use_container_width=True)
+        fig_fd.update_xaxes(showgrid=False)
+        fig_fd.update_yaxes(showgrid=False)
+        st.plotly_chart(fig_fd, use_container_width=True)
 
     if metrics:
         m1, m2, m3 = st.columns(3)
-        m1.metric("WF Accuracy", f"{metrics['acc']*100:.1f}%")
-        m2.metric("WF Precision", f"{metrics['prec']*100:.1f}%")
-        m3.metric("WF Recall", f"{metrics['rec']*100:.1f}%")
+        m1.metric("LSTM Test Accuracy", f"{metrics['acc']*100:.1f}%")
+        m2.metric("LSTM Test Precision", f"{metrics['prec']*100:.1f}%")
+        m3.metric("LSTM Test Recall", f"{metrics['rec']*100:.1f}%")
 
 def render_portfolio_risk(is_crypto: bool, currency: str) -> None:
     section_header("9", "MULTI-ASSET PORTFOLIO STRESS TEST (Risk Parity & Hist VaR)", "◈")
@@ -1501,7 +1560,7 @@ def main() -> None:
 
     # SIDEBAR
     with st.sidebar:
-        st.title("⚡ ALADDIN v26.1")
+        st.title("⚡ ALADDIN v30.0")
 
         sync_col1, sync_col2 = st.columns([3, 1])
         with sync_col1:
@@ -1532,7 +1591,7 @@ def main() -> None:
 
         st.divider()
         st.markdown(
-            '<div style="font-family:JetBrains Mono;font-size:9px;color:#1e3a5f;text-align:center;letter-spacing:1px;">EMA 89 · EMA 21 · VWAP<br>YANG-ZHANG · HURST · VRP<br>TEXTBLOB NLP · XGBOOST ML</div>',
+            '<div style="font-family:JetBrains Mono;font-size:9px;color:#1e3a5f;text-align:center;letter-spacing:1px;">EMA 89 · EMA 21 · VWAP<br>YANG-ZHANG · HURST · VRP<br>TEXTBLOB NLP · LSTM NEURAL NET</div>',
             unsafe_allow_html=True
         )
 
@@ -1602,7 +1661,7 @@ def main() -> None:
                     safe_render(render_advanced_volatility, selected_name, ticker, trading_days, is_crypto)
 
             with st.container(border=True):
-                safe_render(render_ml_engine, ticker, is_crypto)
+                safe_render(render_dl_engine, ticker, is_crypto)
 
             with st.container(border=True):
                 safe_render(render_portfolio_risk, is_crypto, currency)
@@ -1880,8 +1939,8 @@ def main() -> None:
                     border-top:1px solid #0f1e35;
                     font-family:'JetBrains Mono',monospace;
                     font-size:9px;color:#1e3a5f;letter-spacing:2px;">
-            ALADDIN QUANT TERMINAL v26.1 &nbsp;·&nbsp; EMA(20,50,200) &nbsp;·&nbsp; VIX REGIMES &nbsp;·&nbsp;
-            PRE/POST PLAYBOOK &nbsp;·&nbsp; VRP &nbsp;·&nbsp; TEXTBLOB NLP &nbsp;·&nbsp; XGBOOST ML<br>
+            ALADDIN QUANT TERMINAL v30.0 &nbsp;·&nbsp; EMA(20,50,200) &nbsp;·&nbsp; VIX REGIMES &nbsp;·&nbsp;
+            PRE/POST PLAYBOOK &nbsp;·&nbsp; VRP &nbsp;·&nbsp; TEXTBLOB NLP &nbsp;·&nbsp; LSTM NEURAL NET<br>
             FOR EDUCATIONAL PURPOSES ONLY — NOT FINANCIAL ADVICE
         </div>
     """, unsafe_allow_html=True)
