@@ -5,8 +5,9 @@ pandas
 numpy
 plotly
 scipy
-scikit-learn
 xgboost
+scikit-learn
 textblob
+transformers
+torch
 pyyaml
-requests
