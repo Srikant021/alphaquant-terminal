@@ -1630,22 +1630,61 @@ def main() -> None:
                 st.markdown(f"<div style='background:rgba(103,232,249,0.05); padding:15px; border-left:3px solid {CHART_THEME['primary']}; border-radius:4px;'><strong>Strategy Fit:</strong> {strat}{dl_text}</div>", unsafe_allow_html=True)
                 st.divider()
 
-                # Steps 4, 5, 6, 8 (Manual Checklist)
-                section_header("4-5-6-8", "RISK, EVENT & SENTIMENT CHECKLIST", "◈")
+                # Step 4 & 8: Automated Quantitative & Risk Decision
+                section_header("4-5-6-8", "AUTO-RISK & EVENT CHECKLIST", "◈")
+                
+                # Calculate ATR (Average True Range) for automated stop-loss
+                df_tech['High-Low'] = df_tech['High'] - df_tech['Low']
+                df_tech['High-PrevClose'] = abs(df_tech['High'] - df_tech['Close'].shift(1))
+                df_tech['Low-PrevClose'] = abs(df_tech['Low'] - df_tech['Close'].shift(1))
+                df_tech['TR'] = df_tech[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+                df_tech['ATR_14'] = df_tech['TR'].rolling(14).mean()
+                atr = safe_get_scalar(df_tech['ATR_14'])
+                
+                # Default mock capital for sizing (1 Lakh INR or 10k USD)
+                mock_capital = 100000 if currency == "₹" else 10000
+                risk_pct = 0.02 # 2% Max Risk
+                max_loss = mock_capital * risk_pct
+                
+                stop_dist = 1.5 * atr
+                target_dist = stop_dist * 2 # 1:2 RR
+                
+                pos_size = max_loss / stop_dist if stop_dist > 0 else 0
+                
                 colA, colB = st.columns(2)
                 with colA:
-                    st.markdown("**Step 5: Event & Catalyst Check**")
-                    st.text_input("Shock aa sakta hai kya? (Earnings/Data/Expiry)", placeholder="e.g., Fed/RBI Policy today")
-                    st.markdown("**Step 6: Sentiment / Positioning**")
-                    st.text_input("Open Interest (OI) / Put-Call Ratio (PCR)", placeholder="e.g., Call writing high at 22,000")
+                    st.markdown("**Step 5: Event & Sentiment (Manual Overrides)**")
+                    st.text_input("Catalyst Check (Earnings/Data/Expiry)", placeholder="e.g., Fed Policy tonight")
+                    st.text_input("Option Chain Context (PCR/OI)", placeholder="e.g., Heavy Call writing at 22,000")
                 with colB:
-                    st.markdown("**Step 4 & 8: Quantitative & Risk Decision**")
-                    st.checkbox("Are Greeks acceptable? (Delta, Gamma, Vega, Theta)")
-                    st.checkbox("Is Risk-Reward sensible? (Good Expectancy)")
-                    st.text_input("Position Size & Max Acceptable Loss", placeholder="e.g., 2 Lots, Risk ₹5000")
-                    st.text_input("Exit Logic (Agar trade galat gaya toh?)", placeholder="e.g., Exit if close < 20 EMA")
+                    st.markdown("**Step 4 & 8: AI Risk Management Matrix**")
+                    st.markdown(f"""
+                    <div class="module-card" style="padding:10px;">
+                        <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                            <span style="font-size:11px; color:#94a3b8;">Max Allowable Risk (2%):</span>
+                            <strong style="color:{CHART_THEME['bearish']}">{currency}{max_loss:,.0f}</strong>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                            <span style="font-size:11px; color:#94a3b8;">ATR (14D) Volatility Base:</span>
+                            <strong style="color:{CHART_THEME['secondary']}">{currency}{atr:,.1f}</strong>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                            <span style="font-size:11px; color:#94a3b8;">Suggested Stop Loss (1.5x ATR):</span>
+                            <strong style="color:{CHART_THEME['neutral']}">± {currency}{stop_dist:,.1f}</strong>
+                        </div>
+                        <div style="display:flex; justify-content:space-between;">
+                            <span style="font-size:11px; color:#94a3b8;">Target (1:2 R/R):</span>
+                            <strong style="color:{CHART_THEME['bullish']}">± {currency}{target_dist:,.1f}</strong>
+                        </div>
+                        <hr style="margin:8px 0; border-color:#1a2840;">
+                        <div style="font-size:12px; text-align:center; color:{CHART_THEME['primary']};">
+                            <strong>Max Position Qty: {pos_size:,.2f} Units</strong>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
                 
-                st.markdown(f"<div style='color:{CHART_THEME['bearish']}; font-size:12px; font-weight:bold; margin-top:10px;'>🚫 Golden Rule: If any answer unclear → NO TRADE.</div>", unsafe_allow_html=True)
+                g_risk = "HIGH" if ivr > 80 else "MODERATE" if ivr > 40 else "LOW"
+                st.markdown(f"<div style='color:{CHART_THEME['bearish'] if g_risk == 'HIGH' else CHART_THEME['bullish']}; font-size:12px; font-weight:bold; margin-top:10px;'>⚡ Options Vega Risk is currently {g_risk}. Size accordingly.</div>", unsafe_allow_html=True)
             else:
                 st.warning("Insufficient data for Pre-Market Analysis.")
 
@@ -1681,15 +1720,39 @@ def main() -> None:
                 st.divider()
                 
                 # Step 2 & 3: Greeks & Vol
-                section_header("2-3", "GREEKS & VOLATILITY MONITORING", "◈")
+                section_header("2-3", "SYNTHETIC GREEKS & VOLATILITY SHIFT", "◈")
                 st.markdown("""
-                <p style='color:#94a3b8; font-size:12px;'>Options P&L ≠ Price only. Monitor your Greeks!</p>
+                <p style='color:#94a3b8; font-size:12px;'>Automated EOD assessment of option pricing drivers.</p>
                 """, unsafe_allow_html=True)
+                
+                # Fetch VIX data for Greeks synthesis
+                vix_t = get_vix_data(asset_class, ticker, period="1mo", is_crypto=is_crypto)
+                if vix_t is not None and len(vix_t) > 1:
+                    vix_today = safe_get_scalar(vix_t['Close'].iloc[-1])
+                    vix_yest = safe_get_scalar(vix_t['Close'].iloc[-2])
+                else:
+                    vix_today, vix_yest = 15.0, 15.0 # Fallback
+                
+                spot_pct = ((today['Close'] - yest['Close']) / yest['Close']) * 100
+                vix_diff = vix_today - vix_yest
+                
+                # Synthetic Evaluations
+                delta_eval = f"Active ({spot_pct:+.2f}%)"
+                delta_col = CHART_THEME['bullish'] if abs(spot_pct) > 0.5 else CHART_THEME['neutral']
+                
+                gamma_eval = "High Risk (Outlier Move)" if abs(spot_pct) > 1.5 else "Contained"
+                gamma_col = CHART_THEME['bearish'] if abs(spot_pct) > 1.5 else CHART_THEME['bullish']
+                
+                vega_eval = f"Crush ({vix_diff:+.1f} pts)" if vix_diff < -0.5 else (f"Spike ({vix_diff:+.1f} pts)" if vix_diff > 0.5 else "Flat")
+                vega_col = CHART_THEME['bullish'] if vix_diff < 0 else CHART_THEME['bearish'] # Default perspective of option seller/hedger
+                
+                theta_eval = "-1 Day Extrinsic Paid"
+                
                 g1, g2, g3, g4 = st.columns(4)
-                g1.checkbox("Delta (Direction moving?)")
-                g2.checkbox("Gamma (Speed risk high?)")
-                g3.checkbox("Vega (IV crush starting?)")
-                g4.checkbox("Theta (Time decay hitting?)")
+                g1.markdown(f"<div class='module-card'><div class='metric-label'>Δ DELTA (Direction)</div><div style='color:{delta_col}; font-weight:bold; font-size:14px;'>{delta_eval}</div></div>", unsafe_allow_html=True)
+                g2.markdown(f"<div class='module-card'><div class='metric-label'>Γ GAMMA (Speed)</div><div style='color:{gamma_col}; font-weight:bold; font-size:14px;'>{gamma_eval}</div></div>", unsafe_allow_html=True)
+                g3.markdown(f"<div class='module-card'><div class='metric-label'>ν VEGA (Vol Shift)</div><div style='color:{vega_col}; font-weight:bold; font-size:14px;'>{vega_eval}</div></div>", unsafe_allow_html=True)
+                g4.markdown(f"<div class='module-card'><div class='metric-label'>Θ THETA (Time)</div><div style='color:{CHART_THEME['secondary']}; font-weight:bold; font-size:14px;'>{theta_eval}</div></div>", unsafe_allow_html=True)
                 
                 st.divider()
 
