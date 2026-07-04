@@ -11,20 +11,17 @@ import requests
 import time
 import concurrent.futures
 import re
-import urllib.parse
-import xml.etree.ElementTree as ET
 import os
 import yaml
 import logging
 from typing import Optional, Tuple, List, Dict, Any, Union, Callable
 
-# DL IMPORTS (Replacing XGBoost)
+# DL IMPORTS
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, precision_score, recall_score
-from textblob import TextBlob
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -174,7 +171,7 @@ def get_pivots(high, low, close):
     s1 = (2 * pivot) - high
     return pivot, r1, s1
 
-# ============================== DATA INGESTION (L1 + L2) ==============================
+# ============================== DATA INGESTION ==============================
 @st.cache_data(ttl=300, show_spinner=False)
 def _fetch_data_internal(ticker: str, period: str, interval: str, is_crypto: bool) -> Optional[pd.DataFrame]:
     if interval == '15m': period = '1mo'
@@ -306,7 +303,6 @@ def render_executive_summary(
 
     corr_text = "**Unified macro-driven capital flows** confirm high index-wide systematic risk." if corr_val > 0.5 else "**Fragmented, independent asset movement** — diversification is currently effective."
 
-    # Radar Chart & Summary Layout
     norm_ivr = min(ivr / 100, 1.0)
     norm_corr = max(0, min(corr_val, 1.0))
     norm_vrp = max(0, min((vrp_val + 5) / 10, 1.0))
@@ -367,130 +363,6 @@ def render_executive_summary(
             </div>
         """, unsafe_allow_html=True)
 
-# ============================== NLP NEWS SENTIMENT ENGINE ==============================
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_news_sentiment(ticker: str, is_crypto: bool) -> Tuple[Optional[float], Optional[float], List[Dict]]:
-    news = []
-    try:
-        tkr = yf.Ticker(ticker)
-        news = tkr.news
-    except Exception: pass
-
-    if not news or not isinstance(news, list) or len(news) == 0:
-        try:
-            search_res = yf.Search(ticker, news_count=8)
-            news = search_res.news
-        except Exception: pass
-
-    if not news or not isinstance(news, list) or len(news) == 0:
-        try:
-            clean_ticker = ticker.replace('^', '').replace('.NS', '')
-            query_suffix = "crypto" if is_crypto else "stock market"
-            search_query = urllib.parse.quote(f"{clean_ticker} {query_suffix} news")
-            url = f"https://news.google.com/rss/search?q={search_query}&hl=en-US&gl=US&ceid=US:en"
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'}
-            response = requests.get(url, headers=headers, timeout=5)
-            if response.status_code == 200:
-                root = ET.fromstring(response.content)
-                news = []
-                for item in root.findall('./channel/item')[:8]:
-                    title_elem = item.find('title')
-                    source_elem = item.find('source')
-                    if title_elem is not None:
-                        news.append({
-                            'title': title_elem.text,
-                            'publisher': source_elem.text if source_elem is not None else 'Google News'
-                        })
-        except Exception as e:
-            logger.error(f"Google News RSS Fallback failed for {ticker}: {e}")
-
-    if not news or not isinstance(news, list) or len(news) == 0:
-        return None, None, []
-
-    total_polarity, total_subjectivity = 0.0, 0.0
-    analyzed_headlines = []
-    fin_bull = {'surge', 'rally', 'bullish', 'breakout', 'growth', 'outperform', 'etf', 'buy', 'acquisition', 'profit', 'gain', 'soar', 'approve'}
-    fin_bear = {'crash', 'bearish', 'drop', 'lawsuit', 'sec', 'regulatory', 'probe', 'deficit', 'sell', 'inflation', 'dump', 'hack', 'miss'}
-
-    for item in news[:8]:
-        title = item.get('title', '')
-        publisher = item.get('publisher', 'WIRE')
-        if not title: continue
-
-        blob = TextBlob(title)
-        polarity = blob.sentiment.polarity
-        subjectivity = blob.sentiment.subjectivity
-        title_lower = title.lower()
-        for word in fin_bull:
-            if word in title_lower: polarity += 0.15
-        for word in fin_bear:
-            if word in title_lower: polarity -= 0.15
-
-        polarity = max(-1.0, min(1.0, polarity))
-        total_polarity += polarity
-        total_subjectivity += subjectivity
-
-        if polarity > 0.05: tag, color = "BULLISH", CHART_THEME['bullish']
-        elif polarity < -0.05: tag, color = "BEARISH", CHART_THEME['bearish']
-        else: tag, color = "NEUTRAL", CHART_THEME['secondary']
-
-        analyzed_headlines.append({'title': title, 'publisher': publisher, 'tag': tag, 'color': color, 'polarity': polarity})
-
-    count = len(analyzed_headlines)
-    if count == 0: return None, None, []
-
-    avg_polarity = (total_polarity / count) * 100
-    avg_subjectivity = (total_subjectivity / count) * 100
-    return avg_polarity, avg_subjectivity, analyzed_headlines
-
-def render_nlp_sentiment(ticker: str, is_crypto: bool) -> None:
-    section_header("", "NLP NEWS SENTIMENT", "◈")
-    score_data = fetch_news_sentiment(ticker, is_crypto)
-    if score_data[0] is None:
-        st.warning("No recent news context found. IP Rate Limited.")
-        return
-
-    score, subjectivity, headlines = score_data
-    gauge_color = CHART_THEME['bullish'] if score > 10 else (CHART_THEME['bearish'] if score < -10 else CHART_THEME['secondary'])
-
-    fig_gauge = go.Figure(go.Indicator(
-        mode="gauge+number", value=score, domain={'x': [0, 1], 'y': [0, 1]},
-        title={'text': "TextBlob Financial Sentiment", 'font': {'size': 12, 'color': '#94a3b8'}},
-        number={'font': {'color': gauge_color, 'size': 28}},
-        gauge={
-            'axis': {'range': [-100, 100], 'tickcolor': '#334155', 'tickfont': {'size': 9}},
-            'bar': {'color': gauge_color, 'thickness': 0.25},
-            'bgcolor': 'rgba(0,0,0,0)',
-            'borderwidth': 0,
-            'steps': [
-                {'range': [-100, -15], 'color': "rgba(239, 68, 68, 0.15)"},
-                {'range': [-15, 15], 'color': "rgba(255, 255, 255, 0.04)"},
-                {'range': [15, 100], 'color': "rgba(34, 197, 94, 0.15)"}
-            ],
-            'threshold': {'line': {'color': gauge_color, 'width': 2}, 'thickness': 0.75, 'value': score}
-        }
-    ))
-    fig_gauge.update_layout(
-        template=CHART_THEME["template"], height=190,
-        margin=dict(l=20, r=20, t=35, b=5),
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
-    )
-    st.plotly_chart(fig_gauge, use_container_width=True)
-
-    c1, c2 = st.columns(2)
-    c1.metric("Net Bias Score", f"{score:+.1f}")
-    c2.metric("Media Subjectivity", f"{subjectivity:.1f}%")
-
-    st.markdown('<div class="news-section-label">LIVE HEADLINES & POLARITY</div>', unsafe_allow_html=True)
-    for h in headlines:
-        st.markdown(f"""
-            <div class="news-headline" style="border-left: 3px solid {h['color']};">
-                <div class="news-title">{h['title']}</div>
-                <div class="news-meta" style="color:{h['color']};">
-                    [{h['tag']} · {h['polarity']:+.2f}] · <span style="color:#475569;">{h['publisher']}</span>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
 
 # ============================== DEEP LEARNING ENGINE (LSTM) ==============================
 def frac_diff_series(series: pd.Series, d: float = 0.4, window: int = 20) -> pd.Series:
@@ -509,7 +381,6 @@ def frac_diff_series(series: pd.Series, d: float = 0.4, window: int = 20) -> pd.
     padded[window-1:] = diff
     return pd.Series(padded, index=series.index)
 
-# Define PyTorch Model Architecture
 class QuantLSTM(nn.Module):
     def __init__(self, input_size: int):
         super(QuantLSTM, self).__init__()
@@ -706,26 +577,41 @@ def render_portfolio_risk(is_crypto: bool, currency: str) -> None:
     for ticker, name in zip(basket, basket_names):
         df = fetch_data(ticker, period="2y", interval="1d", is_crypto=is_crypto)
         if df is not None and not df.empty and 'Close' in df.columns:
+            # Safely drop any duplicate timestamps to prevent dataframe merging errors
+            df = df[~df.index.duplicated(keep='first')]
             data_dict[ticker] = df['Close']
             successful_names.append(name.split(" ")[0])
 
     if len(data_dict) < 2:
-        st.warning("Insufficient portfolio data.")
+        st.warning("Insufficient portfolio data to calculate correlation and risk.")
         return
 
+    # Forward fill to handle minor timezone or holiday mismatches, then drop NAs
     port_df = pd.DataFrame(data_dict).ffill().dropna()
-    if port_df.empty:
-        st.warning("Insufficient overlapping data for portfolio risk.")
+    
+    # CRITICAL FIX: Ensure we have enough overlapping rows to compute covariance and VaR
+    if len(port_df) < 30:
+        st.warning(f"Insufficient overlapping historical data ({len(port_df)} days). Need at least 30 days to compute Portfolio Risk.")
         return
 
+    # Calculate log returns
     returns = np.log(port_df / port_df.shift(1)).dropna()
-    std_devs = returns.std()
+    
+    # CRITICAL FIX: Replace exactly 0 std dev with a tiny float to prevent division by zero (inf weights)
+    std_devs = returns.std().replace(0, 1e-6)
+    
     inv_vol = 1.0 / std_devs
     weights = (inv_vol / inv_vol.sum()).values
     cov_matrix = returns.cov()
-    port_std_dev = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))) * np.sqrt(252)
+    
+    # Safely compute portfolio variance
+    port_var = np.dot(weights.T, np.dot(cov_matrix, weights))
+    port_std_dev = np.sqrt(abs(port_var)) * np.sqrt(252)
     hist_port_returns = returns.dot(weights)
-    var_95 = abs(np.percentile(hist_port_returns, 5)) * 100
+    
+    # CRITICAL FIX: Use pandas quantile instead of numpy percentile for safety with Series
+    var_95 = abs(hist_port_returns.quantile(0.05)) * 100
+    
     weight_str = " / ".join([f"{n}: {w*100:.0f}%" for n, w in zip(successful_names, weights)])
 
     c1, c2, c3 = st.columns(3)
@@ -1409,33 +1295,6 @@ def main() -> None:
             color: #67e8f9;
         }
 
-        .news-section-label {
-            color: #334155;
-            font-size: 9px;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: 700;
-            margin: 10px 0 8px 0;
-        }
-        .news-headline {
-            background: rgba(10,18,32,0.8);
-            border-radius: 4px;
-            padding: 8px 10px 8px 14px;
-            margin-bottom: 7px;
-        }
-        .news-title {
-            font-size: 12px;
-            color: #C8D1DC;
-            line-height: 1.45;
-            margin-bottom: 4px;
-        }
-        .news-meta {
-            font-size: 9px;
-            font-family: 'JetBrains Mono', monospace;
-            letter-spacing: 0.5px;
-        }
-
         .module-offline {
             background: rgba(239,68,68,0.06);
             border: 1px solid rgba(239,68,68,0.2);
@@ -1591,7 +1450,7 @@ def main() -> None:
 
         st.divider()
         st.markdown(
-            '<div style="font-family:JetBrains Mono;font-size:9px;color:#1e3a5f;text-align:center;letter-spacing:1px;">EMA 89 · EMA 21 · VWAP<br>YANG-ZHANG · HURST · VRP<br>TEXTBLOB NLP · LSTM NEURAL NET</div>',
+            '<div style="font-family:JetBrains Mono;font-size:9px;color:#1e3a5f;text-align:center;letter-spacing:1px;">EMA 89 · EMA 21 · VWAP<br>YANG-ZHANG · HURST · VRP<br>LSTM NEURAL NET</div>',
             unsafe_allow_html=True
         )
 
@@ -1625,13 +1484,8 @@ def main() -> None:
             
             safe_render(render_executive_summary, selected_name, ticker, asset_class, div1, div2, div1_name, div2_name, currency, trading_days, is_crypto)
 
-            tab_row1_c1, tab_row1_c2 = st.columns([2, 1])
-            with tab_row1_c1:
-                with st.container(border=True):
-                    safe_render(render_realtime_chart, selected_name, ticker, is_crypto)
-            with tab_row1_c2:
-                with st.container(border=True):
-                    safe_render(render_nlp_sentiment, ticker, is_crypto)
+            with st.container(border=True):
+                safe_render(render_realtime_chart, selected_name, ticker, is_crypto)
 
             col_row2_1, col_row2_2, col_row2_3 = st.columns(3)
             with col_row2_1:
@@ -1728,8 +1582,8 @@ def main() -> None:
                 v1.markdown(f"<div class='module-card'><div class='metric-label'>Implied Volatility (IV) Rank</div><div class='metric-value'>{ivr:.1f}%</div><div style='font-size:11px;color:#94a3b8;margin-top:4px;'>Current IV: {current_iv:.2f}</div></div>", unsafe_allow_html=True)
                 v2.markdown(f"<div class='module-card'><div class='metric-label'>Pricing Status</div><div class='metric-value'>{iv_bias}</div><div style='font-size:11px;color:#94a3b8;margin-top:4px;'>{iv_action}</div></div>", unsafe_allow_html=True)
 
-                # Step 7: Strategy Selection
-                section_header("7", "AI STRATEGY COMBINER", "◈")
+                # Step 7: Strategy Selection & DEEP LEARNING INTEGRATION
+                section_header("7", "AI STRATEGY COMBINER + DEEP LEARNING", "◈")
                 
                 strat = ""
                 if "UPTREND" in trend_bias or "DOWNTREND" in trend_bias:
@@ -1739,7 +1593,41 @@ def main() -> None:
                     if ivr > 50: strat = "Range + High IV → **Iron Condor / Short Strangle**"
                     else: strat = "Explosive Expected → **Long Straddle / Strangle**"
                     
-                st.markdown(f"<div style='background:rgba(103,232,249,0.05); padding:15px; border-left:3px solid {CHART_THEME['primary']}; border-radius:4px;'><strong>Strategy Fit:</strong> {strat}</div>", unsafe_allow_html=True)
+                # Integrate the LSTM forward pass into the Pre-Trade setup directly
+                model_full, scaler_full, features, _ = train_dl_model(ticker, is_crypto)
+                dl_text = ""
+                
+                if model_full is not None and asset_data is not None:
+                    try:
+                        ml_df = asset_data.copy()
+                        ml_df['Frac_Diff'] = frac_diff_series(ml_df['Close'], d=0.4, window=20)
+                        ml_df['Log_Returns'] = np.log(ml_df['Close'] / ml_df['Close'].shift(1))
+                        ml_df['Vol_20D'] = ml_df['Log_Returns'].rolling(20).std() * np.sqrt(252)
+                        ml_df['SMA_20_Dist'] = (ml_df['Close'] / ml_df['Close'].rolling(20).mean()) - 1
+                        
+                        for f in features:
+                            if f not in ml_df.columns: ml_df[f] = 0.0
+                            
+                        live_data = ml_df[features].dropna()
+                        
+                        if len(live_data) >= 60:
+                            live_scaled = scaler_full.transform(live_data.values)
+                            live_seq = torch.FloatTensor(live_scaled[-60:]).unsqueeze(0)
+                            model_full.eval()
+                            
+                            with torch.no_grad():
+                                prob_bullish = model_full(live_seq).item() * 100
+                            
+                            prob_bearish = 100 - prob_bullish
+                            dl_bias = "BULLISH" if prob_bullish > 50 else "BEARISH"
+                            dl_conf = max(prob_bullish, prob_bearish)
+                            dl_color = CHART_THEME['bullish'] if prob_bullish > 50 else CHART_THEME['bearish']
+                            
+                            dl_text = f"<br><span style='color:{dl_color}; font-size: 13px; font-family: JetBrains Mono, monospace;'><strong>🤖 DEEP LEARNING (NEXT 5D):</strong> {dl_bias} ({dl_conf:.1f}% CONFIDENCE)</span>"
+                    except Exception as e:
+                        logger.error(f"DL Inference failed in pre-trade tab: {e}")
+
+                st.markdown(f"<div style='background:rgba(103,232,249,0.05); padding:15px; border-left:3px solid {CHART_THEME['primary']}; border-radius:4px;'><strong>Strategy Fit:</strong> {strat}{dl_text}</div>", unsafe_allow_html=True)
                 st.divider()
 
                 # Steps 4, 5, 6, 8 (Manual Checklist)
@@ -1940,11 +1828,10 @@ def main() -> None:
                     font-family:'JetBrains Mono',monospace;
                     font-size:9px;color:#1e3a5f;letter-spacing:2px;">
             ALADDIN QUANT TERMINAL v30.0 &nbsp;·&nbsp; EMA(20,50,200) &nbsp;·&nbsp; VIX REGIMES &nbsp;·&nbsp;
-            PRE/POST PLAYBOOK &nbsp;·&nbsp; VRP &nbsp;·&nbsp; TEXTBLOB NLP &nbsp;·&nbsp; LSTM NEURAL NET<br>
+            PRE/POST PLAYBOOK &nbsp;·&nbsp; VRP &nbsp;·&nbsp; LSTM NEURAL NET<br>
             FOR EDUCATIONAL PURPOSES ONLY — NOT FINANCIAL ADVICE
         </div>
     """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
-
