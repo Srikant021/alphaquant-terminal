@@ -18,13 +18,29 @@ import yaml
 import logging
 from typing import Optional, Tuple, List, Dict, Any, Union, Callable
 
-# DL IMPORTS (Replacing XGBoost)
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, precision_score, recall_score
-from textblob import TextBlob
+from sklearn.model_selection import train_test_split
+
+# --- Sentiment: try FinBERT, fallback to TextBlob ---
+try:
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    import torch.nn.functional as F
+    HAS_TRANSFORMERS = True
+except ImportError:
+    HAS_TRANSFORMERS = False
+    from textblob import TextBlob
+
+# --- NSE option chain (optional) ---
+try:
+    from nsepy import get_history
+    from nsepy.derivatives import get_expiry_date, get_derivative_history
+    HAS_NSEPY = True
+except ImportError:
+    HAS_NSEPY = False
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -35,7 +51,10 @@ except ImportError:
 warnings.filterwarnings('ignore')
 
 # ============================== LOGGING ==============================
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # ============================== CONFIGURATION ==============================
@@ -52,6 +71,17 @@ class Config:
         'retry': {
             'max_attempts': 3,
             'backoff_factor': 2.0,
+        },
+        'dl_model': {
+            'lstm_hidden': 64,
+            'lstm_layers': 2,
+            'dropout': 0.3,
+            'learning_rate': 0.001,
+            'epochs': 60,
+            'batch_size': 32,
+            'seq_length': 60,
+            'frac_diff_d': 0.4,
+            'frac_diff_window': 20,
         }
     }
 
@@ -65,13 +95,15 @@ class Config:
             try:
                 with open(path, 'r') as f:
                     user_config = yaml.safe_load(f)
-                if user_config: self._deep_update(self.config, user_config)
+                if user_config:
+                    self._deep_update(self.config, user_config)
             except Exception as e:
                 logger.warning(f"Could not load {path}: {e}")
 
     def _apply_env_overrides(self) -> None:
         for section, params in self.config.items():
-            if not isinstance(params, dict): continue
+            if not isinstance(params, dict):
+                continue
             for key, val in params.items():
                 env_key = f"ALADDIN_{section.upper()}_{key.upper()}"
                 if env_key in os.environ:
@@ -131,16 +163,22 @@ def markdown_to_html(text: str) -> str:
     return re.sub(r'\*\*(.*?)\*\*', r'<strong style="color:#67e8f9;font-weight:700;">\1</strong>', text)
 
 def safe_get_scalar(series: Union[pd.Series, float, int, None], default: float = 0.0) -> float:
-    if series is None: return default
+    if series is None:
+        return default
     if isinstance(series, pd.Series):
-        if series.empty: return default
+        if series.empty:
+            return default
         val = series.iloc[-1]
-    else: val = series
+    else:
+        val = series
     try:
-        if hasattr(val, 'item'): val = val.item()
+        if hasattr(val, 'item'):
+            val = val.item()
         val = float(val)
-    except (ValueError, TypeError): val = default
-    if np.isnan(val) or np.isinf(val): val = default
+    except (ValueError, TypeError):
+        val = default
+    if np.isnan(val) or np.isinf(val):
+        val = default
     return val
 
 def add_watermark(fig: go.Figure) -> None:
@@ -165,7 +203,7 @@ def safe_render(func: Callable, *args, **kwargs) -> None:
         return func(*args, **kwargs)
     except Exception as e:
         logger.error(f"Error in {func.__name__}: {str(e)}", exc_info=True)
-        st.error(f"Component Error: {func.__name__.replace('_', ' ').title()}")
+        st.error(f"Component Error: {func.__name__.replace('_', ' ').title()} - {str(e)}")
         return None
 
 def get_pivots(high, low, close):
@@ -174,26 +212,28 @@ def get_pivots(high, low, close):
     s1 = (2 * pivot) - high
     return pivot, r1, s1
 
-# ============================== DATA INGESTION (L1 + L2) ==============================
+# ============================== DATA INGESTION ==============================
 @st.cache_data(ttl=300, show_spinner=False)
 def _fetch_data_internal(ticker: str, period: str, interval: str, is_crypto: bool) -> Optional[pd.DataFrame]:
-    if interval == '15m': period = '1mo'
-    elif interval in ['1h', '4h'] and period in ['max', '5y', '10y', '2y']: period = '730d'
+    if interval == '15m':
+        period = '1mo'
+    elif interval in ['1h', '4h'] and period in ['max', '5y', '10y', '2y']:
+        period = '730d'
 
     data = yf.download(ticker, period=period, interval=interval, progress=False)
     if (data is None or data.empty) and interval == "15m":
         data = yf.download(ticker, period="5d", interval=interval, progress=False)
 
-    if data is None or data.empty: return None
+    if data is None or data.empty:
+        return None
 
-    # CRITICAL: Normalize MultiIndex columns (yfinance API update issue fix)
+    # Normalize MultiIndex columns
     if isinstance(data.columns, pd.MultiIndex):
         data.columns = data.columns.get_level_values(0)
 
     if data.index.tz is not None:
         data.index = data.index.tz_localize(None)
 
-    # CRITICAL: Prevent processing of empty/corrupted dataframes
     if 'Close' not in data.columns:
         return None
 
@@ -230,7 +270,7 @@ def get_vix_data(asset_class: str, ticker: str, period: str = "1y", is_crypto: b
         return fetch_data("^INDIAVIX", period=period, is_crypto=False)
     else:
         data = fetch_data(ticker, period="2y", is_crypto=True)
-        if data is None or data.empty or 'Close' not in data.columns: 
+        if data is None or data.empty or 'Close' not in data.columns:
             return None
         ret = np.log(data['Close'] / data['Close'].shift(1))
         synth_vix = ret.rolling(30).std() * np.sqrt(365) * 100
@@ -238,151 +278,80 @@ def get_vix_data(asset_class: str, ticker: str, period: str = "1y", is_crypto: b
         vix_df['Close'] = synth_vix
         return vix_df.dropna().tail(365 if period == "1y" else 180)
 
-# ============================== EXECUTIVE MARKET SUMMARY ==============================
-def render_executive_summary(
-    selected_name: str, ticker: str, asset_class: str,
-    div1: str, div2: str, div1_name: str, div2_name: str,
-    currency: str, trading_days: int, is_crypto: bool
-) -> None:
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        f_vix = executor.submit(get_vix_data, asset_class, ticker, "6mo", is_crypto)
-        f_daily = executor.submit(fetch_data, ticker, "1y", "1d", is_crypto)
-        f_div1 = executor.submit(fetch_data, div1, "1y", "1d", is_crypto)
-        f_div2 = executor.submit(fetch_data, div2, "1y", "1d", is_crypto)
-        vix_data_summ, daily_data_summ, d1_data_summ, d2_data_summ = (
-            f_vix.result(), f_daily.result(), f_div1.result(), f_div2.result()
-        )
+# ============================== SENTIMENT ENGINE (FALLBACK) ==============================
+@st.cache_resource(show_spinner=False)
+def load_finbert():
+    """Load FinBERT model and tokenizer if available."""
+    if not HAS_TRANSFORMERS:
+        return None, None
+    model_name = "ProsusAI/finbert"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name)
+    return tokenizer, model
 
-    if any(d is None or d.empty for d in [vix_data_summ, daily_data_summ, d1_data_summ, d2_data_summ]):
-        st.warning("Synthesis data incomplete. Some metrics may be unavailable.")
-        return
+@st.cache_resource(show_spinner=False)
+def get_finbert():
+    return load_finbert()
 
-    current_vix = safe_get_scalar(vix_data_summ['Close'])
-    vix_min = safe_get_scalar(vix_data_summ['Close'].min())
-    vix_max = safe_get_scalar(vix_data_summ['Close'].max())
-    ivr = ((current_vix - vix_min) / (vix_max - vix_min) * 100) if (vix_max - vix_min) != 0 else 0.0
-
-    hv_20 = np.log(daily_data_summ['Close'] / daily_data_summ['Close'].shift(1)).rolling(20).std() * np.sqrt(trading_days) * 100
-    vrp_val = current_vix - safe_get_scalar(hv_20)
-
-    data_div = pd.merge(
-        d1_data_summ['Close'].to_frame('A'), d2_data_summ['Close'].to_frame('B'),
-        left_index=True, right_index=True, how='outer'
-    ).ffill().dropna()
-    
-    if data_div.empty:
-        corr_val = 0.5
+def sentiment_with_finbert(text: str) -> Tuple[float, str]:
+    tokenizer, model = get_finbert()
+    if tokenizer is None:
+        # fallback to TextBlob
+        return sentiment_with_textblob(text)
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    with torch.no_grad():
+        outputs = model(**inputs)
+        probs = F.softmax(outputs.logits, dim=-1)
+        neg, neu, pos = probs[0].tolist()
+        polarity = pos - neg
+    if polarity > 0.1:
+        label = "BULLISH"
+    elif polarity < -0.1:
+        label = "BEARISH"
     else:
-        corr_val = safe_get_scalar(
-            np.log(data_div / data_div.shift(1)).dropna()['A']
-            .rolling(20).corr(np.log(data_div / data_div.shift(1)).dropna()['B']).dropna(),
-            default=0.5
-        )
+        label = "NEUTRAL"
+    return polarity, label
 
-    df_metrics = daily_data_summ.copy()
-    df_metrics['EMA_89'] = df_metrics['Close'].ewm(span=89, adjust=False).mean()
-    df_metrics['EMA_21'] = df_metrics['Close'].ewm(span=21, adjust=False).mean()
-
-    last_close = safe_get_scalar(df_metrics['Close'])
-    last_ema89 = safe_get_scalar(df_metrics['EMA_89'])
-    last_ema21 = safe_get_scalar(df_metrics['EMA_21'])
-
-    if last_close > last_ema89 and last_ema89 > last_ema21:
-        trend_narrative = f"exhibiting an active **Bullish Expansion Structure**. Spot is comfortably elevated above both the momentum 89-period EMA ({currency}{last_ema89:,.2f}) and the intermediate 21-period EMA ({currency}{last_ema21:,.2f}), confirming sustainable upward velocity across timeframes."
-        trend_signal, trend_color = "BULLISH EXPANSION", CHART_THEME['bullish']
-    elif last_close < last_ema89 and last_ema89 < last_ema21:
-        trend_narrative = f"stuck in a strong **Bearish Markdown Sequence**. Price action remains structurally pinned beneath the descending 89-period EMA ({currency}{last_ema89:,.2f}) and 21-period EMA ({currency}{last_ema21:,.2f}), alerting option buyers to step carefully."
-        trend_signal, trend_color = "BEARISH MARKDOWN", CHART_THEME['bearish']
+def sentiment_with_textblob(text: str) -> Tuple[float, str]:
+    blob = TextBlob(text)
+    polarity = blob.sentiment.polarity
+    # Boost with financial keywords (simplified)
+    fin_bull = {'surge', 'rally', 'bullish', 'breakout', 'growth', 'outperform', 'buy', 'profit', 'gain', 'soar'}
+    fin_bear = {'crash', 'bearish', 'drop', 'lawsuit', 'regulatory', 'probe', 'deficit', 'sell', 'inflation', 'dump'}
+    text_lower = text.lower()
+    for w in fin_bull:
+        if w in text_lower:
+            polarity += 0.15
+    for w in fin_bear:
+        if w in text_lower:
+            polarity -= 0.15
+    polarity = max(-1.0, min(1.0, polarity))
+    if polarity > 0.05:
+        label = "BULLISH"
+    elif polarity < -0.05:
+        label = "BEARISH"
     else:
-        trend_narrative = f"experiencing a **Mean Reversion / Consolidation Phase**. Spot pricing is weaving through its 89-period and 21-period EMAs, showing range containment ahead of any directional breakout."
-        trend_signal, trend_color = "CONSOLIDATION", CHART_THEME['secondary']
+        label = "NEUTRAL"
+    return polarity, label
 
-    if vrp_val > 0:
-        vol_narrative = f"Implied parameters are **overpricing** realized movements (VRP: **{vrp_val:+.2f}%**, IVR: **{ivr:.1f}%**). Structural edge favours **premium sellers** — **credit spreads**, **covered writes**, or **short straddles**."
-        vol_signal, vol_color = "SELL PREMIUM", CHART_THEME['secondary']
-    else:
-        vol_narrative = f"Implied vol is **underpricing** historical risk (VRP: **{vrp_val:+.2f}%**, IVR: **{ivr:.1f}%**). Options premium is cheap — structural advantage for **directional buyers** and **long gamma** strategies."
-        vol_signal, vol_color = "BUY OPTIONS", CHART_THEME['primary']
-
-    corr_text = "**Unified macro-driven capital flows** confirm high index-wide systematic risk." if corr_val > 0.5 else "**Fragmented, independent asset movement** — diversification is currently effective."
-
-    # Radar Chart & Summary Layout
-    norm_ivr = min(ivr / 100, 1.0)
-    norm_corr = max(0, min(corr_val, 1.0))
-    norm_vrp = max(0, min((vrp_val + 5) / 10, 1.0))
-    categories = ['IV Rank', 'Correlation', 'VRP Premium']
-
-    col_radar, col_summary = st.columns([1, 2.5])
-    
-    with col_radar:
-        fig_radar = go.Figure(data=go.Scatterpolar(
-            r=[norm_ivr, norm_corr, norm_vrp, norm_ivr],
-            theta=categories + [categories[0]],
-            fill='toself',
-            fillcolor='rgba(103,232,249,0.08)',
-            line=dict(color=CHART_THEME["primary"], width=2)
-        ))
-        fig_radar.update_layout(
-            polar=dict(
-                bgcolor='rgba(0,0,0,0)',
-                radialaxis=dict(visible=False, range=[0, 1]),
-                angularaxis=dict(gridcolor='rgba(255,255,255,0.06)', tickfont=dict(size=10, color='#94a3b8'))
-            ),
-            showlegend=False,
-            template=CHART_THEME["template"],
-            title=dict(text="REGIME PROFILE", font=dict(size=10, color='#64748b'), x=0.5),
-            height=220,
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            margin=dict(l=20, r=20, t=30, b=10)
-        )
-        st.plotly_chart(fig_radar, use_container_width=True)
-
-    with col_summary:
-        st.markdown(f"""
-            <div class="exec-summary-card" style="margin-top: 0px;">
-                <div class="exec-summary-header">
-                    <span class="exec-dot"></span>
-                    EXECUTIVE MARKET SUMMARY — {selected_name.upper()}
-                </div>
-                <div class="exec-grid">
-                    <div class="exec-block">
-                        <div class="exec-block-label">PRICE MOMENTUM STRUCTURE</div>
-                        <div class="exec-signal" style="color:{trend_color};">{trend_signal}</div>
-                        <div class="exec-block-text">{markdown_to_html(trend_narrative)}</div>
-                    </div>
-                    <div class="exec-block">
-                        <div class="exec-block-label">VOLATILITY & OPTIONS STRATEGY</div>
-                        <div class="exec-signal" style="color:{vol_color};">{vol_signal}</div>
-                        <div class="exec-block-text">{markdown_to_html(vol_narrative)}</div>
-                    </div>
-                    <div class="exec-block">
-                        <div class="exec-block-label">INTERMARKET CORRELATION</div>
-                        <div class="exec-signal" style="color:{'#22c55e' if corr_val > 0.5 else '#67e8f9'};">
-                            {div1_name} / {div2_name}: {corr_val:.3f}
-                        </div>
-                        <div class="exec-block-text">{markdown_to_html(corr_text)}</div>
-                    </div>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-
-# ============================== NLP NEWS SENTIMENT ENGINE ==============================
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_news_sentiment(ticker: str, is_crypto: bool) -> Tuple[Optional[float], Optional[float], List[Dict]]:
     news = []
     try:
         tkr = yf.Ticker(ticker)
         news = tkr.news
-    except Exception: pass
+    except Exception:
+        pass
 
     if not news or not isinstance(news, list) or len(news) == 0:
         try:
             search_res = yf.Search(ticker, news_count=8)
             news = search_res.news
-        except Exception: pass
+        except Exception:
+            pass
 
     if not news or not isinstance(news, list) or len(news) == 0:
+        # Fallback to Google News RSS
         try:
             clean_ticker = ticker.replace('^', '').replace('.NS', '')
             query_suffix = "crypto" if is_crypto else "stock market"
@@ -407,55 +376,53 @@ def fetch_news_sentiment(ticker: str, is_crypto: bool) -> Tuple[Optional[float],
     if not news or not isinstance(news, list) or len(news) == 0:
         return None, None, []
 
-    total_polarity, total_subjectivity = 0.0, 0.0
+    total_polarity = 0.0
     analyzed_headlines = []
-    fin_bull = {'surge', 'rally', 'bullish', 'breakout', 'growth', 'outperform', 'etf', 'buy', 'acquisition', 'profit', 'gain', 'soar', 'approve'}
-    fin_bear = {'crash', 'bearish', 'drop', 'lawsuit', 'sec', 'regulatory', 'probe', 'deficit', 'sell', 'inflation', 'dump', 'hack', 'miss'}
 
     for item in news[:8]:
         title = item.get('title', '')
         publisher = item.get('publisher', 'WIRE')
-        if not title: continue
+        if not title:
+            continue
 
-        blob = TextBlob(title)
-        polarity = blob.sentiment.polarity
-        subjectivity = blob.sentiment.subjectivity
-        title_lower = title.lower()
-        for word in fin_bull:
-            if word in title_lower: polarity += 0.15
-        for word in fin_bear:
-            if word in title_lower: polarity -= 0.15
+        if HAS_TRANSFORMERS:
+            polarity, tag = sentiment_with_finbert(title)
+        else:
+            polarity, tag = sentiment_with_textblob(title)
 
-        polarity = max(-1.0, min(1.0, polarity))
         total_polarity += polarity
-        total_subjectivity += subjectivity
-
-        if polarity > 0.05: tag, color = "BULLISH", CHART_THEME['bullish']
-        elif polarity < -0.05: tag, color = "BEARISH", CHART_THEME['bearish']
-        else: tag, color = "NEUTRAL", CHART_THEME['secondary']
-
-        analyzed_headlines.append({'title': title, 'publisher': publisher, 'tag': tag, 'color': color, 'polarity': polarity})
+        color = CHART_THEME['bullish'] if tag == "BULLISH" else (CHART_THEME['bearish'] if tag == "BEARISH" else CHART_THEME['secondary'])
+        analyzed_headlines.append({
+            'title': title,
+            'publisher': publisher,
+            'tag': tag,
+            'color': color,
+            'polarity': polarity
+        })
 
     count = len(analyzed_headlines)
-    if count == 0: return None, None, []
+    if count == 0:
+        return None, None, []
 
     avg_polarity = (total_polarity / count) * 100
-    avg_subjectivity = (total_subjectivity / count) * 100
+    avg_subjectivity = 0.0  # TextBlob would provide it, but FinBERT does not
     return avg_polarity, avg_subjectivity, analyzed_headlines
 
 def render_nlp_sentiment(ticker: str, is_crypto: bool) -> None:
     section_header("", "NLP NEWS SENTIMENT", "◈")
+    if not HAS_TRANSFORMERS:
+        st.info("FinBERT not installed. Using TextBlob (fallback) for sentiment.")
     score_data = fetch_news_sentiment(ticker, is_crypto)
     if score_data[0] is None:
         st.warning("No recent news context found. IP Rate Limited.")
         return
 
-    score, subjectivity, headlines = score_data
+    score, _, headlines = score_data
     gauge_color = CHART_THEME['bullish'] if score > 10 else (CHART_THEME['bearish'] if score < -10 else CHART_THEME['secondary'])
 
     fig_gauge = go.Figure(go.Indicator(
         mode="gauge+number", value=score, domain={'x': [0, 1], 'y': [0, 1]},
-        title={'text': "TextBlob Financial Sentiment", 'font': {'size': 12, 'color': '#94a3b8'}},
+        title={'text': "Sentiment Score", 'font': {'size': 12, 'color': '#94a3b8'}},
         number={'font': {'color': gauge_color, 'size': 28}},
         gauge={
             'axis': {'range': [-100, 100], 'tickcolor': '#334155', 'tickfont': {'size': 9}},
@@ -479,7 +446,7 @@ def render_nlp_sentiment(ticker: str, is_crypto: bool) -> None:
 
     c1, c2 = st.columns(2)
     c1.metric("Net Bias Score", f"{score:+.1f}")
-    c2.metric("Media Subjectivity", f"{subjectivity:.1f}%")
+    c2.metric("Media Subjectivity", "N/A" if HAS_TRANSFORMERS else f"{0.0:.1f}%")
 
     st.markdown('<div class="news-section-label">LIVE HEADLINES & POLARITY</div>', unsafe_allow_html=True)
     for h in headlines:
@@ -492,57 +459,137 @@ def render_nlp_sentiment(ticker: str, is_crypto: bool) -> None:
             </div>
         """, unsafe_allow_html=True)
 
-# ============================== DEEP LEARNING ENGINE (LSTM) ==============================
+# ============================== DEEP LEARNING ENGINE ==============================
 def frac_diff_series(series: pd.Series, d: float = 0.4, window: int = 20) -> pd.Series:
-    """
-    Applies fractional differentiation to a Pandas Series to achieve stationarity 
-    while retaining memory. Formula approximates binomial expansion weights.
-    """
     weights = [1.0]
     for k in range(1, window):
         weights.append(-weights[-1] * (d - k + 1) / k)
     weights = np.array(weights)[::-1]
-    
+
     diff = np.convolve(series, weights, mode='valid')
     padded = np.empty_like(series)
     padded[:] = np.nan
-    padded[window-1:] = diff
+    padded[window - 1:] = diff
     return pd.Series(padded, index=series.index)
 
-# Define PyTorch Model Architecture
 class QuantLSTM(nn.Module):
-    def __init__(self, input_size: int):
+    def __init__(self, input_size: int, hidden_size: int = 64, num_layers: int = 2, dropout: float = 0.3):
         super(QuantLSTM, self).__init__()
-        self.lstm = nn.LSTM(input_size, 32, num_layers=2, batch_first=True, dropout=0.2)
-        self.fc = nn.Linear(32, 1)
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
+        self.fc = nn.Linear(hidden_size, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         out, _ = self.lstm(x)
-        out = self.fc(out[:, -1, :])  # Extract last sequence state
+        out = self.fc(out[:, -1, :])
         return self.sigmoid(out)
 
-@st.cache_resource(ttl=3600, show_spinner=False)
-def train_dl_model(ticker: str, is_crypto: bool):
-    # Fetch 5 years of data for deep learning model stability
-    df = fetch_data(ticker, period="5y", interval="1d", is_crypto=is_crypto)
+def train_model(X_train, y_train, X_val, y_val, input_size: int, config: Dict) -> Tuple[QuantLSTM, Dict]:
+    model = QuantLSTM(
+        input_size=input_size,
+        hidden_size=config.get('lstm_hidden', 64),
+        num_layers=config.get('lstm_layers', 2),
+        dropout=config.get('dropout', 0.3)
+    )
+    criterion = nn.BCELoss()
+    optimizer = optim.Adam(model.parameters(), lr=config.get('learning_rate', 0.001))
+    epochs = config.get('epochs', 60)
+    batch_size = config.get('batch_size', 32)
 
-    if df is None or len(df) < 200 or 'Close' not in df.columns: 
+    X_train_t = torch.FloatTensor(X_train)
+    y_train_t = torch.FloatTensor(y_train).unsqueeze(1)
+    X_val_t = torch.FloatTensor(X_val)
+    y_val_t = torch.FloatTensor(y_val).unsqueeze(1)
+
+    best_val_loss = float('inf')
+    best_model_state = None
+    patience = 10
+    patience_counter = 0
+
+    for epoch in range(epochs):
+        model.train()
+        permutation = torch.randperm(X_train_t.size(0))
+        epoch_loss = 0.0
+        for i in range(0, X_train_t.size(0), batch_size):
+            indices = permutation[i:i + batch_size]
+            batch_x, batch_y = X_train_t[indices], y_train_t[indices]
+            optimizer.zero_grad()
+            output = model(batch_x)
+            loss = criterion(output, batch_y)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item() * batch_x.size(0)
+
+        epoch_loss /= X_train_t.size(0)
+
+        model.eval()
+        with torch.no_grad():
+            val_pred = model(X_val_t)
+            val_loss = criterion(val_pred, y_val_t).item()
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_model_state = model.state_dict()
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                logger.info(f"Early stopping at epoch {epoch+1}")
+                break
+
+    model.load_state_dict(best_model_state)
+    model.eval()
+
+    with torch.no_grad():
+        val_preds = model(X_val_t)
+        val_preds_cls = (val_preds > 0.5).float()
+        acc = accuracy_score(y_val_t.numpy(), val_preds_cls.numpy())
+        prec = precision_score(y_val_t.numpy(), val_preds_cls.numpy(), zero_division=0)
+        rec = recall_score(y_val_t.numpy(), val_preds_cls.numpy(), zero_division=0)
+
+    metrics = {"acc": acc, "prec": prec, "rec": rec}
+    return model, metrics
+
+@st.cache_resource(ttl=3600, show_spinner=False)
+def get_or_train_dl_model(ticker: str, is_crypto: bool) -> Tuple[Optional[QuantLSTM], Optional[StandardScaler], Optional[List], Optional[Dict]]:
+    """Load pre-trained model if exists, else train and save."""
+    model_path = f"models/lstm_{ticker.replace('^','').replace('.NS','')}.pth"
+    scaler_path = f"models/scaler_{ticker.replace('^','').replace('.NS','')}.pkl"
+    features_path = f"models/features_{ticker.replace('^','').replace('.NS','')}.npy"
+
+    os.makedirs("models", exist_ok=True)
+
+    if os.path.exists(model_path) and os.path.exists(scaler_path) and os.path.exists(features_path):
+        try:
+            model = QuantLSTM(input_size=len(np.load(features_path)))
+            model.load_state_dict(torch.load(model_path))
+            scaler = StandardScaler()
+            scaler.mean_ = np.load(scaler_path.replace('.pkl', '_mean.npy'))
+            scaler.scale_ = np.load(scaler_path.replace('.pkl', '_scale.npy'))
+            features = list(np.load(features_path))
+            logger.info(f"Loaded pre-trained model for {ticker}")
+            return model, scaler, features, None
+        except Exception as e:
+            logger.warning(f"Failed to load pre-trained model: {e}. Retraining...")
+
+    # Train from scratch
+    df = fetch_data(ticker, period="5y", interval="1d", is_crypto=is_crypto)
+    if df is None or len(df) < 200 or 'Close' not in df.columns:
         return None, None, None, None
 
-    # Feature Engineering (Fractional Diff replaces raw price)
-    df['Frac_Diff'] = frac_diff_series(df['Close'], d=0.4, window=20)
+    dl_cfg = CONFIG.config.get('dl_model', CONFIG.DEFAULTS['dl_model'])
+    d = dl_cfg.get('frac_diff_d', 0.4)
+    window = dl_cfg.get('frac_diff_window', 20)
+    df['Frac_Diff'] = frac_diff_series(df['Close'], d=d, window=window)
     df['Log_Returns'] = np.log(df['Close'] / df['Close'].shift(1))
     df['Vol_20D'] = df['Log_Returns'].rolling(20).std() * np.sqrt(252)
     df['SMA_20_Dist'] = (df['Close'] / df['Close'].rolling(20).mean()) - 1
-    
-    # Target: Will price be higher in exactly 5 days?
+
     df['Target'] = np.where(df['Close'].shift(-5) > df['Close'], 1, 0)
 
     features = ['Frac_Diff', 'Log_Returns', 'Vol_20D', 'SMA_20_Dist']
     ml_data = df.dropna().copy()
-    
-    if len(ml_data) < 100: 
+    if len(ml_data) < 100:
         return None, None, None, None
 
     X = ml_data[features].values
@@ -551,93 +598,67 @@ def train_dl_model(ticker: str, is_crypto: bool):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    # Sequence Creation (Remembering past 60 candles)
-    seq_length = 60
+    seq_length = dl_cfg.get('seq_length', 60)
     xs, ys = [], []
     for i in range(len(X_scaled) - seq_length):
-        xs.append(X_scaled[i:i+seq_length])
-        ys.append(y[i+seq_length])
-        
+        xs.append(X_scaled[i:i + seq_length])
+        ys.append(y[i + seq_length])
     X_seq = np.array(xs)
     y_seq = np.array(ys)
 
     if len(X_seq) < 50:
         return None, None, None, None
 
-    # Train/Test Split (80/20)
-    split = int(len(X_seq) * 0.8)
-    X_train_t = torch.FloatTensor(X_seq[:split])
-    y_train_t = torch.FloatTensor(y_seq[:split]).unsqueeze(1)
-    X_test_t = torch.FloatTensor(X_seq[split:])
-    y_test_t = torch.FloatTensor(y_seq[split:]).unsqueeze(1)
+    X_train, X_temp, y_train, y_temp = train_test_split(X_seq, y_seq, test_size=0.3, random_state=42)
+    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
 
-    # Init Model & Optimizer
-    model = QuantLSTM(input_size=len(features))
-    criterion = nn.BCELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.005)
+    model, metrics = train_model(X_train, y_train, X_val, y_val, input_size=len(features), config=dl_cfg)
 
-    # Fast Training Loop for Streamlit
-    epochs = 40
-    for epoch in range(epochs):
-        model.train()
-        optimizer.zero_grad()
-        out = model(X_train_t)
-        loss = criterion(out, y_train_t)
-        loss.backward()
-        optimizer.step()
+    torch.save(model.state_dict(), model_path)
+    np.save(scaler_path.replace('.pkl', '_mean.npy'), scaler.mean_)
+    np.save(scaler_path.replace('.pkl', '_scale.npy'), scaler.scale_)
+    np.save(features_path, np.array(features))
 
-    # Validation
-    model.eval()
-    with torch.no_grad():
-        preds = model(X_test_t)
-        preds_cls = (preds > 0.5).float()
-        acc = accuracy_score(y_test_t.numpy(), preds_cls.numpy())
-        prec = precision_score(y_test_t.numpy(), preds_cls.numpy(), zero_division=0)
-        rec = recall_score(y_test_t.numpy(), preds_cls.numpy(), zero_division=0)
-
-    metrics = {"acc": acc, "prec": prec, "rec": rec}
     return model, scaler, features, metrics
 
 def render_dl_engine(ticker: str, is_crypto: bool) -> None:
     section_header("8", "DEEP LEARNING ENGINE (LSTM + FracDiff)", "◈")
-    
-    model_full, scaler_full, features, metrics = train_dl_model(ticker, is_crypto)
-    
+
+    model_full, scaler_full, features, metrics = get_or_train_dl_model(ticker, is_crypto)
     if model_full is None:
-        st.warning("Insufficient historical data to train LSTM neural network.")
+        st.warning("Insufficient historical data to train/load LSTM neural network.")
         return
 
-    # Fetch live inference data
     df = fetch_data(ticker, period="6mo", interval="1d", is_crypto=is_crypto)
-
     if df is None or df.empty or 'Close' not in df.columns:
         st.warning("Live spot data unavailable for prediction.")
         return
 
-    df['Frac_Diff'] = frac_diff_series(df['Close'], d=0.4, window=20)
+    dl_cfg = CONFIG.config.get('dl_model', CONFIG.DEFAULTS['dl_model'])
+    d = dl_cfg.get('frac_diff_d', 0.4)
+    window = dl_cfg.get('frac_diff_window', 20)
+    df['Frac_Diff'] = frac_diff_series(df['Close'], d=d, window=window)
     df['Log_Returns'] = np.log(df['Close'] / df['Close'].shift(1))
     df['Vol_20D'] = df['Log_Returns'].rolling(20).std() * np.sqrt(252)
     df['SMA_20_Dist'] = (df['Close'] / df['Close'].rolling(20).mean()) - 1
 
-    # Ensure consistent features
     for f in features:
         if f not in df.columns:
-            df[f] = 0.0 
+            df[f] = 0.0
 
     live_data = df[features].dropna().copy()
-
     if len(live_data) < 60:
         st.warning("Prediction calculation failed. Not enough live feature data to build a 60-day sequence.")
         return
 
-    # Process and Predict
     live_scaled = scaler_full.transform(live_data.values)
-    live_seq = torch.FloatTensor(live_scaled[-60:]).unsqueeze(0)
+    seq_length = dl_cfg.get('seq_length', 60)
+    live_seq = torch.FloatTensor(live_scaled[-seq_length:]).unsqueeze(0)
 
     model_full.eval()
     with torch.no_grad():
         prob_bullish = model_full(live_seq).item() * 100
-        
+
     prob_bearish = 100 - prob_bullish
     prediction = "BULLISH (Next 5 Days)" if prob_bullish > 50 else "BEARISH (Next 5 Days)"
     pred_color = CHART_THEME['bullish'] if prob_bullish > 50 else CHART_THEME['bearish']
@@ -673,13 +694,10 @@ def render_dl_engine(ticker: str, is_crypto: bool) -> None:
         st.plotly_chart(fig_gauge, use_container_width=True)
 
     with col2:
-        # Plot Fractional Differentiation stationary series vs raw price
         fig_fd = make_subplots(specs=[[{"secondary_y": True}]])
         plot_df = df.tail(100).dropna()
-        
         fig_fd.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Close'], name='Price', line=dict(color=CHART_THEME['neutral'], width=1.5)), secondary_y=False)
         fig_fd.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Frac_Diff'], name='Frac Diff (d=0.4)', line=dict(color=CHART_THEME['accent'], dash='dot', width=1.5)), secondary_y=True)
-        
         fig_fd.update_layout(
             title=dict(text="Stationarity: Raw Price vs Fractionally Differentiated", font=dict(size=11, color='#94a3b8')),
             template=CHART_THEME["template"], height=260,
@@ -693,24 +711,62 @@ def render_dl_engine(ticker: str, is_crypto: bool) -> None:
 
     if metrics:
         m1, m2, m3 = st.columns(3)
-        m1.metric("LSTM Test Accuracy", f"{metrics['acc']*100:.1f}%")
-        m2.metric("LSTM Test Precision", f"{metrics['prec']*100:.1f}%")
-        m3.metric("LSTM Test Recall", f"{metrics['rec']*100:.1f}%")
+        m1.metric("LSTM Validation Accuracy", f"{metrics['acc']*100:.1f}%")
+        m2.metric("LSTM Validation Precision", f"{metrics['prec']*100:.1f}%")
+        m3.metric("LSTM Validation Recall", f"{metrics['rec']*100:.1f}%")
 
+# ============================== NSE OPTION CHAIN ==============================
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_nse_option_chain(symbol: str = "NIFTY") -> Optional[Dict]:
+    if not HAS_NSEPY:
+        logger.warning("nsepy not installed. Option chain data unavailable.")
+        return None
+    try:
+        from nsepy.derivatives import get_derivative_history
+        from datetime import datetime
+        expiry = get_expiry_date()
+        data = get_derivative_history(
+            symbol=symbol,
+            start=datetime.today().date(),
+            end=datetime.today().date(),
+            expiry=expiry
+        )
+        if data is None or data.empty:
+            return None
+        call_oi = data[data['OPTION_TYP'] == 'CE']['OPEN_INTEREST'].sum()
+        put_oi = data[data['OPTION_TYP'] == 'PE']['OPEN_INTEREST'].sum()
+        if call_oi == 0:
+            pcr = 1.0
+        else:
+            pcr = put_oi / call_oi
+        iv = 15.0  # placeholder; can be computed from ATM straddle
+        return {'pcr': pcr, 'iv': iv}
+    except Exception as e:
+        logger.error(f"Error fetching NSE option chain: {e}")
+        return None
+
+# ============================== PORTFOLIO RISK ==============================
 def render_portfolio_risk(is_crypto: bool, currency: str) -> None:
     section_header("9", "MULTI-ASSET PORTFOLIO STRESS TEST (Risk Parity & Hist VaR)", "◈")
-    basket = list(CRYPTO_ASSETS.values()) if is_crypto else list(INDIAN_ASSETS.values())[:3]
-    basket_names = list(CRYPTO_ASSETS.keys()) if is_crypto else list(INDIAN_ASSETS.keys())[:3]
 
-    data_dict, successful_names = {}, []
-    for ticker, name in zip(basket, basket_names):
+    asset_dict = CRYPTO_ASSETS if is_crypto else INDIAN_ASSETS
+    asset_names = list(asset_dict.keys())
+    selected_names = st.multiselect("Select assets for portfolio", asset_names, default=asset_names[:3])
+    if not selected_names:
+        st.info("Please select at least two assets.")
+        return
+    selected_tickers = [asset_dict[name] for name in selected_names]
+
+    data_dict = {}
+    successful_names = []
+    for ticker, name in zip(selected_tickers, selected_names):
         df = fetch_data(ticker, period="2y", interval="1d", is_crypto=is_crypto)
         if df is not None and not df.empty and 'Close' in df.columns:
             data_dict[ticker] = df['Close']
             successful_names.append(name.split(" ")[0])
 
     if len(data_dict) < 2:
-        st.warning("Insufficient portfolio data.")
+        st.warning("Insufficient data for at least two assets.")
         return
 
     port_df = pd.DataFrame(data_dict).ffill().dropna()
@@ -744,7 +800,6 @@ def render_realtime_chart(selected_name: str, ticker: str, is_crypto: bool) -> N
     )
 
     data = fetch_data(ticker, period=period, interval=interval, is_crypto=is_crypto)
-    
     if data is None or data.empty or 'Close' not in data.columns:
         st.caption(f"Real-time data currently unavailable for {ticker}.")
         return
@@ -873,6 +928,7 @@ def render_realtime_chart(selected_name: str, ticker: str, is_crypto: bool) -> N
     regime = "SUPPLY SWEEP" if last_supply else ("DEMAND SWEEP" if last_demand else "DISCOVERY")
     c4.metric("Micro-Regime", regime)
 
+# ============================== VOLATILITY METRICS ==============================
 def render_volatility_metrics(asset_class: str, ticker: str, is_crypto: bool) -> None:
     section_header("1", "IMPLIED VOLATILITY RANK", "◈")
     vix_name = "India VIX" if asset_class == "Indian Equities" else "Synthetic IV (30D HV)"
@@ -921,7 +977,6 @@ def render_expected_move(selected_name: str, ticker: str, asset_class: str, curr
     section_header("2", "EXPECTED MOVE (1σ)", "◈")
     asset_data = fetch_data(ticker, period="1mo", is_crypto=is_crypto)
     vix = get_vix_data(asset_class, ticker, period="5d", is_crypto=is_crypto)
-    
     if asset_data is None or asset_data.empty or vix is None or vix.empty or 'Close' not in asset_data.columns:
         st.warning("Data fetch failed for Expected Move.")
         return
@@ -974,7 +1029,6 @@ def render_index_divergence(div1: str, div2: str, name1: str, name2: str, curren
     section_header("3", f"SYSTEMIC DIVERGENCE: {name1} vs {name2}", "◈")
     d1 = fetch_data(div1, period="1y", is_crypto=is_crypto)
     d2 = fetch_data(div2, period="1y", is_crypto=is_crypto)
-    
     if d1 is None or d1.empty or d2 is None or d2.empty or 'Close' not in d1.columns or 'Close' not in d2.columns:
         st.warning("Divergence data unavailable.")
         return
@@ -1026,7 +1080,8 @@ def render_volatility_cone(selected_name: str, ticker: str, trading_days: int, i
     windows = [10, 20, 30, 60, 90, 120, 180, trading_days]
     stats = []
     for w in windows:
-        if w > len(returns): continue
+        if w > len(returns):
+            continue
         vol_series = returns.rolling(w).std() * np.sqrt(trading_days) * 100
         stats.append({
             'window': w, 'max': safe_get_scalar(vol_series.max()),
@@ -1035,7 +1090,6 @@ def render_volatility_cone(selected_name: str, ticker: str, trading_days: int, i
             'current': safe_get_scalar(vol_series.iloc[-1])
         })
     df_stats = pd.DataFrame(stats)
-    
     if df_stats.empty:
         st.warning("Insufficient historical data for volatility cone.")
         return
@@ -1058,7 +1112,6 @@ def render_vrp(selected_name: str, ticker: str, asset_class: str, trading_days: 
     section_header("5", "VOLATILITY RISK PREMIUM (VRP)", "◈")
     main_data = fetch_data(ticker, period="6mo", is_crypto=is_crypto)
     vix = get_vix_data(asset_class, ticker, period="6mo", is_crypto=is_crypto)
-    
     if main_data is None or main_data.empty or vix is None or vix.empty or 'Close' not in main_data.columns:
         st.warning("Data unavailable.")
         return
@@ -1103,11 +1156,14 @@ def render_hurst_regime(selected_name: str, ticker: str, is_crypto: bool) -> Non
         return
 
     def calculate_hurst(ts: pd.Series) -> float:
-        if len(ts) < 20: return np.nan
+        if len(ts) < 20:
+            return np.nan
         lags = range(2, 20)
         reg_val = [np.std(ts.values[lag:] - ts.values[:-lag]) for lag in lags]
-        try: return np.polyfit(np.log(lags), np.log(reg_val), 1)[0]
-        except: return np.nan
+        try:
+            return np.polyfit(np.log(lags), np.log(reg_val), 1)[0]
+        except:
+            return np.nan
 
     log_prices = np.log(data['Close'])
     hurst_series = log_prices.rolling(window=60).apply(calculate_hurst, raw=False)
@@ -1178,7 +1234,133 @@ def render_advanced_volatility(selected_name: str, ticker: str, trading_days: in
     c2.metric("Close-to-Close Vol", f"{c2c_vol:.2f}%")
     c3.metric("Hidden Gap Risk", f"{gap_risk:+.2f}%", delta_color="inverse")
 
-# ============================== MAIN UI ROUTER ==============================
+# ============================== EXECUTIVE SUMMARY ==============================
+def render_executive_summary(
+    selected_name: str, ticker: str, asset_class: str,
+    div1: str, div2: str, div1_name: str, div2_name: str,
+    currency: str, trading_days: int, is_crypto: bool
+) -> None:
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        f_vix = executor.submit(get_vix_data, asset_class, ticker, "6mo", is_crypto)
+        f_daily = executor.submit(fetch_data, ticker, "1y", "1d", is_crypto)
+        f_div1 = executor.submit(fetch_data, div1, "1y", "1d", is_crypto)
+        f_div2 = executor.submit(fetch_data, div2, "1y", "1d", is_crypto)
+        vix_data_summ, daily_data_summ, d1_data_summ, d2_data_summ = (
+            f_vix.result(), f_daily.result(), f_div1.result(), f_div2.result()
+        )
+
+    if any(d is None or d.empty for d in [vix_data_summ, daily_data_summ, d1_data_summ, d2_data_summ]):
+        st.warning("Synthesis data incomplete. Some metrics may be unavailable.")
+        return
+
+    current_vix = safe_get_scalar(vix_data_summ['Close'])
+    vix_min = safe_get_scalar(vix_data_summ['Close'].min())
+    vix_max = safe_get_scalar(vix_data_summ['Close'].max())
+    ivr = ((current_vix - vix_min) / (vix_max - vix_min) * 100) if (vix_max - vix_min) != 0 else 0.0
+
+    hv_20 = np.log(daily_data_summ['Close'] / daily_data_summ['Close'].shift(1)).rolling(20).std() * np.sqrt(trading_days) * 100
+    vrp_val = current_vix - safe_get_scalar(hv_20)
+
+    data_div = pd.merge(
+        d1_data_summ['Close'].to_frame('A'), d2_data_summ['Close'].to_frame('B'),
+        left_index=True, right_index=True, how='outer'
+    ).ffill().dropna()
+    if data_div.empty:
+        corr_val = 0.5
+    else:
+        corr_val = safe_get_scalar(
+            np.log(data_div / data_div.shift(1)).dropna()['A']
+            .rolling(20).corr(np.log(data_div / data_div.shift(1)).dropna()['B']).dropna(),
+            default=0.5
+        )
+
+    df_metrics = daily_data_summ.copy()
+    df_metrics['EMA_89'] = df_metrics['Close'].ewm(span=89, adjust=False).mean()
+    df_metrics['EMA_21'] = df_metrics['Close'].ewm(span=21, adjust=False).mean()
+
+    last_close = safe_get_scalar(df_metrics['Close'])
+    last_ema89 = safe_get_scalar(df_metrics['EMA_89'])
+    last_ema21 = safe_get_scalar(df_metrics['EMA_21'])
+
+    if last_close > last_ema89 and last_ema89 > last_ema21:
+        trend_narrative = f"exhibiting an active **Bullish Expansion Structure**. Spot is comfortably elevated above both the momentum 89-period EMA ({currency}{last_ema89:,.2f}) and the intermediate 21-period EMA ({currency}{last_ema21:,.2f}), confirming sustainable upward velocity across timeframes."
+        trend_signal, trend_color = "BULLISH EXPANSION", CHART_THEME['bullish']
+    elif last_close < last_ema89 and last_ema89 < last_ema21:
+        trend_narrative = f"stuck in a strong **Bearish Markdown Sequence**. Price action remains structurally pinned beneath the descending 89-period EMA ({currency}{last_ema89:,.2f}) and 21-period EMA ({currency}{last_ema21:,.2f}), alerting option buyers to step carefully."
+        trend_signal, trend_color = "BEARISH MARKDOWN", CHART_THEME['bearish']
+    else:
+        trend_narrative = f"experiencing a **Mean Reversion / Consolidation Phase**. Spot pricing is weaving through its 89-period and 21-period EMAs, showing range containment ahead of any directional breakout."
+        trend_signal, trend_color = "CONSOLIDATION", CHART_THEME['secondary']
+
+    if vrp_val > 0:
+        vol_narrative = f"Implied parameters are **overpricing** realized movements (VRP: **{vrp_val:+.2f}%**, IVR: **{ivr:.1f}%**). Structural edge favours **premium sellers** — **credit spreads**, **covered writes**, or **short straddles**."
+        vol_signal, vol_color = "SELL PREMIUM", CHART_THEME['secondary']
+    else:
+        vol_narrative = f"Implied vol is **underpricing** historical risk (VRP: **{vrp_val:+.2f}%**, IVR: **{ivr:.1f}%**). Options premium is cheap — structural advantage for **directional buyers** and **long gamma** strategies."
+        vol_signal, vol_color = "BUY OPTIONS", CHART_THEME['primary']
+
+    corr_text = "**Unified macro-driven capital flows** confirm high index-wide systematic risk." if corr_val > 0.5 else "**Fragmented, independent asset movement** — diversification is currently effective."
+
+    norm_ivr = min(ivr / 100, 1.0)
+    norm_corr = max(0, min(corr_val, 1.0))
+    norm_vrp = max(0, min((vrp_val + 5) / 10, 1.0))
+    categories = ['IV Rank', 'Correlation', 'VRP Premium']
+
+    col_radar, col_summary = st.columns([1, 2.5])
+    with col_radar:
+        fig_radar = go.Figure(data=go.Scatterpolar(
+            r=[norm_ivr, norm_corr, norm_vrp, norm_ivr],
+            theta=categories + [categories[0]],
+            fill='toself',
+            fillcolor='rgba(103,232,249,0.08)',
+            line=dict(color=CHART_THEME["primary"], width=2)
+        ))
+        fig_radar.update_layout(
+            polar=dict(
+                bgcolor='rgba(0,0,0,0)',
+                radialaxis=dict(visible=False, range=[0, 1]),
+                angularaxis=dict(gridcolor='rgba(255,255,255,0.06)', tickfont=dict(size=10, color='#94a3b8'))
+            ),
+            showlegend=False,
+            template=CHART_THEME["template"],
+            title=dict(text="REGIME PROFILE", font=dict(size=10, color='#64748b'), x=0.5),
+            height=220,
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=20, r=20, t=30, b=10)
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
+
+    with col_summary:
+        st.markdown(f"""
+            <div class="exec-summary-card" style="margin-top: 0px;">
+                <div class="exec-summary-header">
+                    <span class="exec-dot"></span>
+                    EXECUTIVE MARKET SUMMARY — {selected_name.upper()}
+                </div>
+                <div class="exec-grid">
+                    <div class="exec-block">
+                        <div class="exec-block-label">PRICE MOMENTUM STRUCTURE</div>
+                        <div class="exec-signal" style="color:{trend_color};">{trend_signal}</div>
+                        <div class="exec-block-text">{markdown_to_html(trend_narrative)}</div>
+                    </div>
+                    <div class="exec-block">
+                        <div class="exec-block-label">VOLATILITY & OPTIONS STRATEGY</div>
+                        <div class="exec-signal" style="color:{vol_color};">{vol_signal}</div>
+                        <div class="exec-block-text">{markdown_to_html(vol_narrative)}</div>
+                    </div>
+                    <div class="exec-block">
+                        <div class="exec-block-label">INTERMARKET CORRELATION</div>
+                        <div class="exec-signal" style="color:{'#22c55e' if corr_val > 0.5 else '#67e8f9'};">
+                            {div1_name} / {div2_name}: {corr_val:.3f}
+                        </div>
+                        <div class="exec-block-text">{markdown_to_html(corr_text)}</div>
+                    </div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+# ============================== MAIN APP ==============================
 def main() -> None:
     st.set_page_config(
         page_title="Aladdin Quant Terminal",
@@ -1190,7 +1372,7 @@ def main() -> None:
     if HAS_AUTOREFRESH:
         st_autorefresh(interval=60000, key="aladdin_refresh")
 
-    # COMPREHENSIVE CSS
+    # CSS (full responsive style)
     st.markdown("""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
@@ -1390,14 +1572,6 @@ def main() -> None:
             letter-spacing: 1px;
             margin-bottom: 8px;
         }
-        .exec-sub {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 10px;
-            font-weight: 600;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            margin: 8px 0 4px 0;
-        }
         .exec-block-text {
             font-size: 12px;
             color: #94a3b8;
@@ -1509,7 +1683,6 @@ def main() -> None:
             text-transform: uppercase !important;
         }
 
-        /* Customizing Streamlit Tabs */
         .stTabs [data-baseweb="tab-list"] {
             gap: 24px;
             background-color: transparent;
@@ -1529,7 +1702,7 @@ def main() -> None:
             border-bottom: 2px solid #67e8f9 !important;
             color: #F1F5F9 !important;
         }
-        
+
         .stPlotlyChart { border-radius: 4px; overflow: hidden; }
 
         /* Custom Grids for Pre/Post Market */
@@ -1561,7 +1734,6 @@ def main() -> None:
     # SIDEBAR
     with st.sidebar:
         st.title("⚡ ALADDIN v30.0")
-
         sync_col1, sync_col2 = st.columns([3, 1])
         with sync_col1:
             if st.button("↻ Force Sync", use_container_width=True):
@@ -1591,7 +1763,7 @@ def main() -> None:
 
         st.divider()
         st.markdown(
-            '<div style="font-family:JetBrains Mono;font-size:9px;color:#1e3a5f;text-align:center;letter-spacing:1px;">EMA 89 · EMA 21 · VWAP<br>YANG-ZHANG · HURST · VRP<br>TEXTBLOB NLP · LSTM NEURAL NET</div>',
+            '<div style="font-family:JetBrains Mono;font-size:9px;color:#1e3a5f;text-align:center;letter-spacing:1px;">EMA 89 · EMA 21 · VWAP<br>YANG-ZHANG · HURST · VRP<br>FINBERT · LSTM NEURAL NET</div>',
             unsafe_allow_html=True
         )
 
@@ -1617,12 +1789,11 @@ def main() -> None:
             </div>
         """, unsafe_allow_html=True)
 
-    # CREATE TABS
+    # TABS
     tab_live, tab_pre, tab_post, tab_vix = st.tabs(["🔴 LIVE MATRIX", "🌅 PRE-TRADE", "🌃 POST-TRADE", "📉 INDIA VIX"])
 
     with tab_live:
         with st.spinner("Initialising Aladdin quantitative matrix…"):
-            
             safe_render(render_executive_summary, selected_name, ticker, asset_class, div1, div2, div1_name, div2_name, currency, trading_days, is_crypto)
 
             tab_row1_c1, tab_row1_c2 = st.columns([2, 1])
@@ -1668,25 +1839,21 @@ def main() -> None:
 
     with tab_pre:
         with st.container(border=True):
-            # Pre-Trade Analysis Step-by-Step
             st.markdown("## 🌅 PRE-TRADE ANALYSIS (8-Step Institutional Setup)")
-            
             asset_data = fetch_data(ticker, period="1y", interval="1d", is_crypto=is_crypto)
             vix_data = get_vix_data(asset_class, ticker, period="1y", is_crypto=is_crypto)
-            
+
             if asset_data is not None and len(asset_data) > 200 and 'Close' in asset_data.columns:
                 # Steps 1 & 2: Environment & Technical
                 section_header("1 & 2", "ENVIRONMENT & TECHNICAL STRUCTURE", "◈")
-                
                 df_tech = asset_data.copy()
                 df_tech['EMA_20'] = df_tech['Close'].ewm(span=20, adjust=False).mean()
                 df_tech['EMA_50'] = df_tech['Close'].ewm(span=50, adjust=False).mean()
                 df_tech['EMA_200'] = df_tech['Close'].ewm(span=200, adjust=False).mean()
-                
                 last = df_tech.iloc[-1]
                 prev = df_tech.iloc[-2]
                 c_close, ema20, ema50, ema200 = last['Close'], last['EMA_20'], last['EMA_50'], last['EMA_200']
-                
+
                 if c_close > ema20 and ema20 > ema50 and ema50 > ema200:
                     trend_bias = "UPTREND"
                     trend_desc = "Higher Highs + Higher Lows. Market directional hai."
@@ -1699,46 +1866,47 @@ def main() -> None:
                     trend_bias = "SIDEWAYS / CHOPPY"
                     trend_desc = "MAs are flat or crossing. Neutral strategy better."
                     trend_col = CHART_THEME['secondary']
-                
+
                 c1, c2 = st.columns(2)
                 c1.markdown(f"<div class='module-card'><div class='metric-label'>Trend vs Range</div><div class='metric-value' style='color:{trend_col}'>{trend_bias}</div><div style='font-size:11px;color:#94a3b8;margin-top:4px;'>{trend_desc}</div></div>", unsafe_allow_html=True)
-                
                 pivot, r1, s1 = get_pivots(prev['High'], prev['Low'], prev['Close'])
                 c2.markdown(f"<div class='module-card'><div class='metric-label'>Key Levels (Pivot/R1/S1)</div><div class='metric-value'>{currency}{pivot:,.2f}</div><div style='font-size:11px;color:#94a3b8;margin-top:4px;'>R1: {currency}{r1:,.2f} | S1: {currency}{s1:,.2f}</div></div>", unsafe_allow_html=True)
 
                 # Step 3: Volatility Analysis
                 section_header("3", "VOLATILITY ANALYSIS (OPTIONS PRICING)", "◈")
-                
                 current_iv = 15.0
                 ivr = 0.0
                 if vix_data is not None and not vix_data.empty and 'Close' in vix_data.columns:
                     current_iv = safe_get_scalar(vix_data['Close'])
                     v_max = safe_get_scalar(vix_data['Close'].max())
                     v_min = safe_get_scalar(vix_data['Close'].min())
-                    if v_max - v_min > 0: ivr = ((current_iv - v_min) / (v_max - v_min)) * 100
-                
+                    if v_max - v_min > 0:
+                        ivr = ((current_iv - v_min) / (v_max - v_min)) * 100
+
                 if ivr > 50:
                     iv_bias = "HIGH IV (Expensive)"
                     iv_action = "Selling is favorable (Credit Spreads)"
                 else:
                     iv_bias = "LOW IV (Cheap)"
                     iv_action = "Buying is favorable (Debit Spreads)"
-                
+
                 v1, v2 = st.columns(2)
                 v1.markdown(f"<div class='module-card'><div class='metric-label'>Implied Volatility (IV) Rank</div><div class='metric-value'>{ivr:.1f}%</div><div style='font-size:11px;color:#94a3b8;margin-top:4px;'>Current IV: {current_iv:.2f}</div></div>", unsafe_allow_html=True)
                 v2.markdown(f"<div class='module-card'><div class='metric-label'>Pricing Status</div><div class='metric-value'>{iv_bias}</div><div style='font-size:11px;color:#94a3b8;margin-top:4px;'>{iv_action}</div></div>", unsafe_allow_html=True)
 
                 # Step 7: Strategy Selection
                 section_header("7", "AI STRATEGY COMBINER", "◈")
-                
                 strat = ""
                 if "UPTREND" in trend_bias or "DOWNTREND" in trend_bias:
-                    if ivr < 50: strat = "Directional + Low IV → **Option Buying / Debit Spreads**"
-                    else: strat = "Directional + High IV → **Credit Spreads**"
+                    if ivr < 50:
+                        strat = "Directional + Low IV → **Option Buying / Debit Spreads**"
+                    else:
+                        strat = "Directional + High IV → **Credit Spreads**"
                 else:
-                    if ivr > 50: strat = "Range + High IV → **Iron Condor / Short Strangle**"
-                    else: strat = "Explosive Expected → **Long Straddle / Strangle**"
-                    
+                    if ivr > 50:
+                        strat = "Range + High IV → **Iron Condor / Short Strangle**"
+                    else:
+                        strat = "Explosive Expected → **Long Straddle / Strangle**"
                 st.markdown(f"<div style='background:rgba(103,232,249,0.05); padding:15px; border-left:3px solid {CHART_THEME['primary']}; border-radius:4px;'><strong>Strategy Fit:</strong> {strat}</div>", unsafe_allow_html=True)
                 st.divider()
 
@@ -1756,7 +1924,7 @@ def main() -> None:
                     st.checkbox("Is Risk-Reward sensible? (Good Expectancy)")
                     st.text_input("Position Size & Max Acceptable Loss", placeholder="e.g., 2 Lots, Risk ₹5000")
                     st.text_input("Exit Logic (Agar trade galat gaya toh?)", placeholder="e.g., Exit if close < 20 EMA")
-                
+
                 st.markdown(f"<div style='color:{CHART_THEME['bearish']}; font-size:12px; font-weight:bold; margin-top:10px;'>🚫 Golden Rule: If any answer unclear → NO TRADE.</div>", unsafe_allow_html=True)
             else:
                 st.warning("Insufficient data for Pre-Market Analysis.")
@@ -1764,19 +1932,16 @@ def main() -> None:
     with tab_post:
         with st.container(border=True):
             st.markdown("## 🌃 POST-TRADE ANALYSIS (10-Step Workflow)")
-            
             asset_data = fetch_data(ticker, period="1mo", interval="1d", is_crypto=is_crypto)
             if asset_data is not None and not asset_data.empty and len(asset_data) > 1 and 'Close' in asset_data.columns:
                 today = asset_data.iloc[-1]
                 yest = asset_data.iloc[-2]
-                
-                # Step 1: Price Behavior
                 section_header("1-5", "PRICE BEHAVIOR & REGIME SHIFT", "◈")
                 c1, c2, c3 = st.columns(3)
                 c1.metric("EOD Close", f"{currency}{today['Close']:,.2f}", f"{((today['Close']-yest['Close'])/yest['Close'])*100:+.2f}%")
                 c2.metric("Day's High", f"{currency}{today['High']:,.2f}")
                 c3.metric("Day's Low", f"{currency}{today['Low']:,.2f}")
-                
+
                 st.markdown("""
                 <div class="pm-grid">
                     <div class="module-card">
@@ -1789,10 +1954,8 @@ def main() -> None:
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
-                
                 st.divider()
-                
-                # Step 2 & 3: Greeks & Vol
+
                 section_header("2-3", "GREEKS & VOLATILITY MONITORING", "◈")
                 st.markdown("""
                 <p style='color:#94a3b8; font-size:12px;'>Options P&L ≠ Price only. Monitor your Greeks!</p>
@@ -1802,10 +1965,8 @@ def main() -> None:
                 g2.checkbox("Gamma (Speed risk high?)")
                 g3.checkbox("Vega (IV crush starting?)")
                 g4.checkbox("Theta (Time decay hitting?)")
-                
                 st.divider()
 
-                # Step 6, 7, 8, 9: Review
                 section_header("6-9", "DEFENSE & EXIT QUALITY", "◈")
                 r1, r2 = st.columns(2)
                 with r1:
@@ -1815,10 +1976,8 @@ def main() -> None:
                     st.selectbox("**Step 8: P&L Source (Decomposition)**", ["N/A", "Delta Move (Price)", "Vega Crush/Spike (IV)", "Theta Decay (Time)"])
                     st.markdown("**Step 9: Mistake vs Outcome**")
                     st.radio("Evaluation:", ["Good Decision + Profit", "Good Decision + Loss", "Bad Decision + Profit", "Bad Decision + Loss"], index=0, horizontal=True)
-                
                 st.divider()
-                
-                # Step 10: Journal
+
                 section_header("10", "TRADE JOURNAL ENTRY (NON-NEGOTIABLE)", "◈")
                 if 'trade_journal' not in st.session_state:
                     st.session_state.trade_journal = pd.DataFrame(columns=[
@@ -1832,7 +1991,7 @@ def main() -> None:
         with st.container(border=True):
             st.markdown("## 📉 INDIA VIX & SMART MONEY POSITIONING")
             st.markdown("<p style='color:#94a3b8; font-size:13px;'>VIX Regimes, Option Chain PCR, and Volume Profile Logic.</p>", unsafe_allow_html=True)
-            
+
             vix_ticker = "^INDIAVIX" if not is_crypto else ticker
             vix_data = fetch_data(vix_ticker, period="1y", interval="1d", is_crypto=is_crypto)
 
@@ -1848,10 +2007,8 @@ def main() -> None:
 
                 current_vix = safe_get_scalar(vix_data['Close'])
                 prev_vix = safe_get_scalar(vix_data['Close'].iloc[-2]) if len(vix_data) > 1 else current_vix
-                
-                # STEP 1: READ VIX
+
                 section_header("1", f"READ {vix_ticker_name.upper()} (MARKET CONDITION)", "◈")
-                
                 if current_vix < 14:
                     v_regime = "10 - 14 (Dead / Range)"
                     v_bias = "Option Buying (cheap)"
@@ -1879,11 +2036,18 @@ def main() -> None:
                 st.plotly_chart(fig, use_container_width=True)
                 st.divider()
 
-                # STEP 2: OPTION CHAIN PCR & SMART MONEY
                 section_header("2", "OPTION CHAIN (SMART MONEY POSITIONING)", "◈")
+                option_data = None
+                if not is_crypto and HAS_NSEPY:
+                    option_data = fetch_nse_option_chain(symbol="NIFTY")
+
                 colA, colB = st.columns(2)
                 with colA:
-                    pcr_val = st.number_input("Enter Live PCR (Put Call Ratio)", value=1.0, step=0.1)
+                    if option_data and 'pcr' in option_data:
+                        pcr_val = option_data['pcr']
+                        st.info(f"Live PCR fetched from NSE: {pcr_val:.2f}")
+                    else:
+                        pcr_val = st.number_input("Enter Live PCR (Put Call Ratio)", value=1.0, step=0.1)
                     pcr_sig = "Bullish" if pcr_val > 1.2 else "Bearish" if pcr_val < 0.8 else "Neutral"
                     st.info(f"**PCR Interpretation:** {pcr_sig}")
                 with colB:
@@ -1901,7 +2065,6 @@ def main() -> None:
                     st.markdown(f"<div style='color:{sig_col}; font-weight:bold;'>{sig}</div>", unsafe_allow_html=True)
                 st.divider()
 
-                # STEP 3: COMPLETE STRATEGY SETUPS
                 section_header("3", "COMPLETE STRATEGY SETUPS", "◈")
                 st.markdown("<p style='color:#94a3b8; font-size:12px;'>AI evaluating conditions for the 4 Master Setups...</p>", unsafe_allow_html=True)
 
@@ -1940,7 +2103,7 @@ def main() -> None:
                     font-family:'JetBrains Mono',monospace;
                     font-size:9px;color:#1e3a5f;letter-spacing:2px;">
             ALADDIN QUANT TERMINAL v30.0 &nbsp;·&nbsp; EMA(20,50,200) &nbsp;·&nbsp; VIX REGIMES &nbsp;·&nbsp;
-            PRE/POST PLAYBOOK &nbsp;·&nbsp; VRP &nbsp;·&nbsp; TEXTBLOB NLP &nbsp;·&nbsp; LSTM NEURAL NET<br>
+            PRE/POST PLAYBOOK &nbsp;·&nbsp; VRP &nbsp;·&nbsp; FINBERT NLP &nbsp;·&nbsp; LSTM NEURAL NET<br>
             FOR EDUCATIONAL PURPOSES ONLY — NOT FINANCIAL ADVICE
         </div>
     """, unsafe_allow_html=True)
