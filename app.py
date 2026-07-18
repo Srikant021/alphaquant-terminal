@@ -1536,9 +1536,9 @@ def main() -> None:
         # ==========================================
         if not is_crypto and HAS_FYERS:
             
-            fyers_client_id = "A8MXI4LH6N-200"
-            fyers_secret = "SwNNcmILk5Zo4UE8"
-            fyers_redirect = "https://your-app-name.streamlit.app/](https://your-app-name.streamlit.app/" 
+            fyers_client_id = "1429ZQANUF-100"
+            fyers_secret = "KLD2AMQAQD"
+            fyers_redirect = "https://srikant021-alphaquant-terminal.streamlit.app/" 
             
             # 1. AUTO-CATCH THE AUTH CODE FROM URL
             if "auth_code" in st.query_params and "fyers_access_token" not in st.session_state:
