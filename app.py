@@ -1538,7 +1538,7 @@ def main() -> None:
             
             fyers_client_id = "A8MXI4LH6N-200"
             fyers_secret = "SwNNcmILk5Zo4UE8"
-            fyers_redirect = "http://127.0.0.1:8501/" 
+            fyers_redirect = "https://your-app-name.streamlit.app/](https://your-app-name.streamlit.app/" 
             
             # 1. AUTO-CATCH THE AUTH CODE FROM URL
             if "auth_code" in st.query_params and "fyers_access_token" not in st.session_state:
