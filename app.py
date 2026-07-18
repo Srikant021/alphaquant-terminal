@@ -14,6 +14,7 @@ import os
 import yaml
 import logging
 import threading
+import requests
 from typing import Optional, Tuple, List, Dict, Any, Union, Callable
 
 # DL IMPORTS
@@ -198,6 +199,95 @@ def start_fyers_websocket(client_id: str, access_token: str):
     
     st.session_state.fyers_ws = fyers_ws
     fyers_ws.connect()
+
+# ============================== DYNAMIC OPTION CHAIN ENGINES ==============================
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_nse_option_data(ticker_name: str) -> dict:
+    """Scrapes NSE live option chain to calculate PCR and Daily Change in OI dynamically."""
+    if "Bank" in ticker_name: nse_sym = "BANKNIFTY"
+    elif "Fin" in ticker_name: nse_sym = "FINNIFTY"
+    elif "Nifty" in ticker_name: nse_sym = "NIFTY"
+    else: return {"pcr": 1.0, "oi_trend": "Neutral"} # Fallback for individual stocks
+
+    url = f"https://www.nseindia.com/api/option-chain-indices?symbol={nse_sym}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
+    
+    try:
+        session = requests.Session()
+        session.get("https://www.nseindia.com", headers=headers, timeout=5) # Init cookies
+        response = session.get(url, headers=headers, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            pe_oi = data['filtered']['PE']['totOI']
+            ce_oi = data['filtered']['CE']['totOI']
+            
+            # Calculate actual Change in Open Interest to determine build-up
+            records = data['filtered']['data']
+            ce_oi_chg = sum([item['CE']['changeinOpenInterest'] for item in records if 'CE' in item and item['CE']['changeinOpenInterest'] is not None])
+            pe_oi_chg = sum([item['PE']['changeinOpenInterest'] for item in records if 'PE' in item and item['PE']['changeinOpenInterest'] is not None])
+            
+            pcr = round(pe_oi / ce_oi, 2) if ce_oi > 0 else 1.0
+            
+            # If Put additions severely outpace Call additions, smart money is building support
+            if pe_oi_chg > ce_oi_chg * 1.1:
+                oi_trend = "Put OI increasing"
+            elif ce_oi_chg > pe_oi_chg * 1.1:
+                oi_trend = "Call OI increasing"
+            else:
+                oi_trend = "Neutral"
+                
+            return {"pcr": pcr, "oi_trend": oi_trend}
+    except Exception as e:
+        logger.error(f"Live NSE PCR Fetch Failed: {e}")
+    
+    return {"pcr": 1.0, "oi_trend": "Neutral"}
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_crypto_option_data(ticker_name: str) -> dict:
+    """Fetches Deribit live option chain to calculate PCR and Volume-based Smart Money positioning."""
+    currency = "BTC" if "BTC" in ticker_name else "ETH" if "ETH" in ticker_name else "SOL"
+    url = f"https://deribit.com/api/v2/public/get_book_summary_by_currency?currency={currency}&kind=option"
+    
+    try:
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json().get('result', [])
+            pe_oi = 0.0
+            ce_oi = 0.0
+            pe_vol = 0.0
+            ce_vol = 0.0
+            
+            for item in data:
+                inst = item['instrument_name'] # e.g., BTC-25MAR22-40000-C
+                oi = item.get('open_interest', 0)
+                vol = item.get('volume_usd', 0)
+                
+                if inst.endswith('-C'):
+                    ce_oi += oi
+                    ce_vol += vol
+                elif inst.endswith('-P'):
+                    pe_oi += oi
+                    pe_vol += vol
+            
+            pcr = round(pe_oi / ce_oi, 2) if ce_oi > 0 else 1.0
+            
+            # For Crypto, we use Volume as a proxy for intraday smart money buildup
+            if pe_vol > ce_vol * 1.1:
+                oi_trend = "Put OI increasing"
+            elif ce_vol > pe_vol * 1.1:
+                oi_trend = "Call OI increasing"
+            else:
+                oi_trend = "Neutral"
+                
+            return {"pcr": pcr, "oi_trend": oi_trend}
+    except Exception as e:
+        logger.error(f"Live Crypto PCR Fetch Failed: {e}")
+        
+    return {"pcr": 1.0, "oi_trend": "Neutral"}
 
 # ============================== HELPERS & DEFENSIVE RENDER ==============================
 def markdown_to_html(text: str) -> str:
@@ -625,132 +715,6 @@ def render_dl_engine(ticker: str, is_crypto: bool) -> None:
         m2.metric("LSTM Test Precision", f"{metrics['prec']*100:.1f}%")
         m3.metric("LSTM Test Recall", f"{metrics['rec']*100:.1f}%")
 
-def render_portfolio_risk(is_crypto: bool, currency: str) -> None:
-    section_header("9", "MULTI-ASSET PORTFOLIO STRESS TEST (Risk Parity & Hist VaR)", "◈")
-    basket = list(CRYPTO_ASSETS.values()) if is_crypto else list(INDIAN_ASSETS.values())[:3]
-    basket_names = list(CRYPTO_ASSETS.keys()) if is_crypto else list(INDIAN_ASSETS.keys())[:3]
-
-    data_dict, successful_names = {}, []
-    for ticker, name in zip(basket, basket_names):
-        df = fetch_data(ticker, period="2y", interval="1d", is_crypto=is_crypto)
-        if df is not None and not df.empty and 'Close' in df.columns:
-            df = df[~df.index.duplicated(keep='first')]
-            data_dict[ticker] = df['Close']
-            successful_names.append(name.split(" ")[0])
-
-    if len(data_dict) < 2:
-        st.warning("Insufficient portfolio data to calculate correlation and risk.")
-        return
-
-    port_df = pd.DataFrame(data_dict).ffill().dropna()
-    
-    if len(port_df) < 30:
-        st.warning(f"Insufficient overlapping historical data ({len(port_df)} days). Need at least 30 days to compute Portfolio Risk.")
-        return
-
-    returns = np.log(port_df / port_df.shift(1)).dropna()
-    std_devs = returns.std().replace(0, 1e-6)
-    
-    inv_vol = 1.0 / std_devs
-    weights = (inv_vol / inv_vol.sum()).values
-    cov_matrix = returns.cov()
-    
-    port_var = np.dot(weights.T, np.dot(cov_matrix, weights))
-    port_std_dev = np.sqrt(abs(port_var)) * np.sqrt(252)
-    hist_port_returns = returns.dot(weights)
-    
-    var_95 = abs(hist_port_returns.quantile(0.05)) * 100
-    
-    weight_str = " / ".join([f"{n}: {w*100:.0f}%" for n, w in zip(successful_names, weights)])
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Risk Parity Weights", weight_str)
-    c2.metric("Portfolio Annual Vol", f"{port_std_dev*100:.2f}%")
-    c3.metric("Daily VaR (95%)", f"-{var_95:.2f}%", "Capital at Risk", delta_color="inverse")
-
-# ============================== REALTIME CHART (FRAGMENT) ==============================
-@st.fragment(run_every="1s")
-def render_realtime_chart(ticker: str, is_crypto: bool) -> None:
-    section_header("", "LIVE MARKET MATRIX · 1S TICK", "◈")
-    
-    # Fallback for Crypto or if Fyers is not configured/installed
-    if is_crypto or not HAS_FYERS:
-        data = fetch_data(ticker, period="5d", interval="15m", is_crypto=is_crypto)
-        if data is None or data.empty or 'Close' not in data.columns:
-            st.caption(f"Real-time data currently unavailable for {ticker}.")
-            return
-        
-        last_close = safe_get_scalar(data['Close'])
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Live Price (15m delay)", f"${last_close:,.2f}")
-        c2.metric("Volume", f"{safe_get_scalar(data['Volume']):,.0f}")
-        c3.metric("Status", "Polling Mode")
-        
-        fig = go.Figure(data=[go.Candlestick(x=data.index, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'])])
-        fig.update_layout(template=CHART_THEME['template'], height=400, margin=dict(l=10, r=50, t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis_rangeslider_visible=False)
-        st.plotly_chart(fig, use_container_width=True)
-        return
-
-    # Fyers Websocket Data Rendering
-    tick_data = st.session_state.get(f"live_tick_{ticker}", None)
-    history_data = st.session_state.get(f"live_history_{ticker}", [])
-    
-    if tick_data is None or len(history_data) == 0:
-        st.info(f"Awaiting Fyers WebSocket feed for {ticker}. Please ensure you are logged in via the sidebar.")
-        return
-        
-    ltp = tick_data.get('ltp', 0.0)
-    prev_close = tick_data.get('prev_close_price', ltp)
-    
-    if prev_close > 0:
-        change_pct = ((ltp - prev_close) / prev_close) * 100
-    else:
-        change_pct = 0.0
-        
-    vol = tick_data.get('vol_traded_today', 0)
-    day_high = tick_data.get('high_price', ltp)
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Live Price", f"₹{ltp:,.2f}", f"{change_pct:+.2f}%")
-    c2.metric("Day High", f"₹{day_high:,.2f}")
-    c3.metric("Total Volume", f"{vol:,}")
-    
-    df_live = pd.DataFrame(history_data)
-    
-    fig = make_subplots(rows=1, cols=1)
-    fig.add_trace(
-        go.Scatter(
-            x=df_live['Time'], 
-            y=df_live['Close'],
-            mode='lines',
-            name='LTP',
-            line=dict(color=CHART_THEME['primary'], width=2),
-            fill='tozeroy',
-            fillcolor='rgba(103, 232, 249, 0.08)'
-        )
-    )
-    
-    fig.add_hline(
-        y=ltp, 
-        line_dash="dot", 
-        line_color=CHART_THEME['accent'], 
-        annotation_text=f"₹{ltp:,.2f}",
-        annotation_position="right"
-    )
-    
-    fig.update_layout(
-        template=CHART_THEME['template'],
-        height=400,
-        margin=dict(l=10, r=50, t=10, b=10),
-        paper_bgcolor='rgba(0,0,0,0)', 
-        plot_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.04)'),
-        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.04)')
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-
-
 # ============================== OTHER METRIC COMPONENTS ==============================
 def render_volatility_metrics(asset_class: str, ticker: str, is_crypto: bool) -> None:
     section_header("1", "IMPLIED VOLATILITY RANK", "◈")
@@ -1056,6 +1020,154 @@ def render_advanced_volatility(selected_name: str, ticker: str, trading_days: in
     c1.metric("Yang-Zhang Vol", f"{yz_vol:.2f}%")
     c2.metric("Close-to-Close Vol", f"{c2c_vol:.2f}%")
     c3.metric("Hidden Gap Risk", f"{gap_risk:+.2f}%", delta_color="inverse")
+
+def render_portfolio_risk(is_crypto: bool, currency: str) -> None:
+    section_header("9", "MULTI-ASSET PORTFOLIO STRESS TEST (Risk Parity & Hist VaR)", "◈")
+    basket = list(CRYPTO_ASSETS.values()) if is_crypto else list(INDIAN_ASSETS.values())[:3]
+    basket_names = list(CRYPTO_ASSETS.keys()) if is_crypto else list(INDIAN_ASSETS.keys())[:3]
+
+    data_dict, successful_names = {}, []
+    for ticker, name in zip(basket, basket_names):
+        df = fetch_data(ticker, period="2y", interval="1d", is_crypto=is_crypto)
+        if df is not None and not df.empty and 'Close' in df.columns:
+            df = df[~df.index.duplicated(keep='first')]
+            data_dict[ticker] = df['Close']
+            successful_names.append(name.split(" ")[0])
+
+    if len(data_dict) < 2:
+        st.warning("Insufficient portfolio data to calculate correlation and risk.")
+        return
+
+    port_df = pd.DataFrame(data_dict).ffill().dropna()
+    
+    if len(port_df) < 30:
+        st.warning(f"Insufficient overlapping historical data ({len(port_df)} days). Need at least 30 days to compute Portfolio Risk.")
+        return
+
+    returns = np.log(port_df / port_df.shift(1)).dropna()
+    std_devs = returns.std().replace(0, 1e-6)
+    
+    inv_vol = 1.0 / std_devs
+    weights = (inv_vol / inv_vol.sum()).values
+    cov_matrix = returns.cov()
+    
+    port_var = np.dot(weights.T, np.dot(cov_matrix, weights))
+    port_std_dev = np.sqrt(abs(port_var)) * np.sqrt(252)
+    hist_port_returns = returns.dot(weights)
+    
+    var_95 = abs(hist_port_returns.quantile(0.05)) * 100
+    
+    weight_str = " / ".join([f"{n}: {w*100:.0f}%" for n, w in zip(successful_names, weights)])
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Risk Parity Weights", weight_str)
+    c2.metric("Portfolio Annual Vol", f"{port_std_dev*100:.2f}%")
+    c3.metric("Daily VaR (95%)", f"-{var_95:.2f}%", "Capital at Risk", delta_color="inverse")
+
+# ============================== REALTIME CHART FRAGMENT IMPLEMENTATION ==============================
+@st.fragment(run_every="1s")
+def render_realtime_chart(ticker: str, is_crypto: bool) -> None:
+    section_header("", "LIVE MARKET MATRIX · 1S TICK", "◈")
+    
+    # 1. SEED THE CHART FOR WEEKENDS OR FRESH LOADS
+    if f"live_history_{ticker}" not in st.session_state or len(st.session_state[f"live_history_{ticker}"]) == 0:
+        seed_df = fetch_data(ticker, period="5d", interval="5m", is_crypto=is_crypto)
+        if seed_df is not None and not seed_df.empty:
+            history_data = []
+            for idx, row in seed_df.iterrows():
+                history_data.append({
+                    'Time': idx,
+                    'Close': float(row['Close']),
+                    'High': float(row['High']),
+                    'Low': float(row['Low']),
+                    'Volume': float(row.get('Volume', 0))
+                })
+            st.session_state[f"live_history_{ticker}"] = history_data
+
+    # Fallback for Crypto or if Fyers is not configured/installed
+    if is_crypto or not HAS_FYERS:
+        data = fetch_data(ticker, period="5d", interval="15m", is_crypto=is_crypto)
+        if data is None or data.empty or 'Close' not in data.columns:
+            st.caption(f"Real-time data currently unavailable for {ticker}.")
+            return
+        
+        last_close = safe_get_scalar(data['Close'])
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Live Price (15m delay)", f"${last_close:,.2f}")
+        c2.metric("Volume", f"{safe_get_scalar(data['Volume']):,.0f}")
+        c3.metric("Status", "Polling Mode")
+        
+        fig = go.Figure(data=[go.Candlestick(x=data.index, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'])])
+        fig.update_layout(template=CHART_THEME['template'], height=400, margin=dict(l=10, r=50, t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig, use_container_width=True)
+        return
+
+    # Fyers Websocket Data Rendering
+    tick_data = st.session_state.get(f"live_tick_{ticker}", None)
+    history_data = st.session_state.get(f"live_history_{ticker}", [])
+    
+    if tick_data is None and len(history_data) == 0:
+        st.info(f"Awaiting Fyers WebSocket feed for {ticker}. Please ensure you are logged in via the sidebar.")
+        return
+        
+    # Grab latest data (either from live tick or the last item in our seeded history)
+    if tick_data:
+        ltp = tick_data.get('ltp', 0.0)
+        prev_close = tick_data.get('prev_close_price', ltp)
+        vol = tick_data.get('vol_traded_today', 0)
+        day_high = tick_data.get('high_price', ltp)
+    else:
+        # Fallback to seeded history if market is closed
+        last_seeded = history_data[-1]
+        ltp = last_seeded['Close']
+        prev_close = ltp # Proxy if no tick
+        vol = last_seeded['Volume']
+        day_high = last_seeded['High']
+
+    if prev_close > 0:
+        change_pct = ((ltp - prev_close) / prev_close) * 100
+    else:
+        change_pct = 0.0
+        
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Live Price", f"₹{ltp:,.2f}", f"{change_pct:+.2f}%")
+    c2.metric("Day High", f"₹{day_high:,.2f}")
+    c3.metric("Total Volume", f"{vol:,}")
+    
+    df_live = pd.DataFrame(history_data)
+    
+    fig = make_subplots(rows=1, cols=1)
+    fig.add_trace(
+        go.Scatter(
+            x=df_live['Time'], 
+            y=df_live['Close'],
+            mode='lines',
+            name='LTP',
+            line=dict(color=CHART_THEME['primary'], width=2),
+            fill='tozeroy',
+            fillcolor='rgba(103, 232, 249, 0.08)'
+        )
+    )
+    
+    fig.add_hline(
+        y=ltp, 
+        line_dash="dot", 
+        line_color=CHART_THEME['accent'], 
+        annotation_text=f"₹{ltp:,.2f}",
+        annotation_position="right"
+    )
+    
+    fig.update_layout(
+        template=CHART_THEME['template'],
+        height=400,
+        margin=dict(l=10, r=50, t=10, b=10),
+        paper_bgcolor='rgba(0,0,0,0)', 
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.04)'),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.04)')
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
 
 # ============================== MAIN UI ROUTER ==============================
 def main() -> None:
@@ -1426,8 +1538,6 @@ def main() -> None:
             
             fyers_client_id = "A8MXI4LH6N-200"
             fyers_secret = "SwNNcmILk5Zo4UE8"
-            
-            # MUST match exactly what you set in Fyers API Dashboard
             fyers_redirect = "http://127.0.0.1:8501/" 
             
             # 1. AUTO-CATCH THE AUTH CODE FROM URL
@@ -1817,7 +1927,7 @@ def main() -> None:
     with tab_vix:
         with st.container(border=True):
             st.markdown("## 📉 INDIA VIX & SMART MONEY POSITIONING")
-            st.markdown("<p style='color:#94a3b8; font-size:13px;'>VIX Regimes, Option Chain PCR, and Volume Profile Logic.</p>", unsafe_allow_html=True)
+            st.markdown("<p style='color:#94a3b8; font-size:13px;'>VIX Regimes, Dynamic Option Chain PCR, and Volume Profile Logic.</p>", unsafe_allow_html=True)
             
             vix_ticker = "^INDIAVIX" if not is_crypto else ticker
             vix_data = fetch_data(vix_ticker, period="1y", interval="1d", is_crypto=is_crypto)
@@ -1864,15 +1974,33 @@ def main() -> None:
                 st.plotly_chart(fig, use_container_width=True)
                 st.divider()
 
-                section_header("2", "OPTION CHAIN (SMART MONEY POSITIONING)", "◈")
+                section_header("2", "DYNAMIC OPTION CHAIN POSITIONING", "◈")
                 colA, colB = st.columns(2)
+                
+                # Fetch appropriate dynamic options data
+                if not is_crypto:
+                    opt_data = fetch_nse_option_data(selected_name)
+                else:
+                    opt_data = fetch_crypto_option_data(selected_name)
+                    
+                pcr_val = opt_data["pcr"]
+                oi_sel = opt_data["oi_trend"]
+                
                 with colA:
-                    pcr_val = st.number_input("Enter Live PCR (Put Call Ratio)", value=1.0, step=0.1)
-                    pcr_sig = "Bullish" if pcr_val > 1.2 else "Bearish" if pcr_val < 0.8 else "Neutral"
-                    st.info(f"**PCR Interpretation:** {pcr_sig}")
+                    st.markdown(f"**Live Option Chain PCR ({'Crypto/Deribit' if is_crypto else 'NSE'})**")
+                    pcr_sig = "Bullish (Oversold)" if pcr_val > 1.2 else "Bearish (Overbought)" if pcr_val < 0.8 else "Neutral"
+                    
+                    st.markdown(f"""
+                    <div class="module-card">
+                        <div class="metric-label">True Put-Call Ratio</div>
+                        <div class="metric-value" style="color:{CHART_THEME['primary']}">{pcr_val:.2f}</div>
+                        <div style="font-size:11px;color:#94a3b8;margin-top:4px;">Interpretation: {pcr_sig}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
                 with colB:
-                    st.markdown("**Hidden Signal (OI Shift + VIX):**")
-                    oi_sel = st.selectbox("Select observed OI build-up:", ["Put OI increasing", "Call OI increasing", "Neutral"])
+                    st.markdown("**Hidden Signal (Live OI Shift + VIX):**")
+                    
                     if oi_sel == "Put OI increasing" and current_vix < prev_vix:
                         sig = "Strong Bullish (Support forming, fear dropping)"
                         sig_col = CHART_THEME['bullish']
@@ -1880,9 +2008,16 @@ def main() -> None:
                         sig = "Bearish Pressure (Resistance forming, fear rising)"
                         sig_col = CHART_THEME['bearish']
                     else:
-                        sig = "Mixed Signal"
+                        sig = f"Mixed Signal ({oi_sel})"
                         sig_col = CHART_THEME['secondary']
-                    st.markdown(f"<div style='color:{sig_col}; font-weight:bold;'>{sig}</div>", unsafe_allow_html=True)
+                        
+                    st.markdown(f"""
+                    <div class="module-card">
+                        <div class="metric-label">Smart Money Trend</div>
+                        <div class="metric-value" style="color:{sig_col}; font-size: 16px;">{sig}</div>
+                        <div style="font-size:11px;color:#94a3b8;margin-top:4px;">Action Detected: {oi_sel}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
                 st.divider()
 
                 section_header("3", "COMPLETE STRATEGY SETUPS", "◈")
