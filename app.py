@@ -6,14 +6,14 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
-from datetime import timedelta
-import requests
+from datetime import datetime, timedelta
 import time
 import concurrent.futures
 import re
 import os
 import yaml
 import logging
+import threading
 from typing import Optional, Tuple, List, Dict, Any, Union, Callable
 
 # DL IMPORTS
@@ -23,11 +23,13 @@ import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, precision_score, recall_score
 
+# FYERS IMPORT
 try:
-    from streamlit_autorefresh import st_autorefresh
-    HAS_AUTOREFRESH = True
+    from fyers_apiv3.FyersWebsocket import data_ws
+    from fyers_apiv3 import fyersModel
+    HAS_FYERS = True
 except ImportError:
-    HAS_AUTOREFRESH = False
+    HAS_FYERS = False
 
 warnings.filterwarnings('ignore')
 
@@ -123,6 +125,80 @@ CRYPTO_ASSETS = {
     "Solana (SOL)": "SOL-USD"
 }
 
+FYERS_SYMBOLS = {
+    "NSE:NIFTY50-INDEX": "^NSEI",
+    "NSE:NIFTYBANK-INDEX": "^NSEBANK",
+    "NSE:FINNIFTY-INDEX": "NIFTY_FIN_SERVICE.NS",
+    "NSE:CNXIT-INDEX": "^CNXIT",
+    "NSE:CNXAUTO-INDEX": "^CNXAUTO",
+    "NSE:CNXMETAL-INDEX": "^CNXMETAL",
+    "BSE:SENSEX-INDEX": "^BSESN",
+    "NSE:RELIANCE-EQ": "RELIANCE.NS",
+    "NSE:HDFCBANK-EQ": "HDFCBANK.NS",
+    "NSE:INFY-EQ": "INFY.NS",
+    "NSE:TCS-EQ": "TCS.NS",
+    "NSE:ICICIBANK-EQ": "ICICIBANK.NS"
+}
+
+# ============================== FYERS WEBSOCKET ENGINE ==============================
+def onmessage(message):
+    """Callback to receive ticks from Fyers."""
+    for tick in message:
+        if 'symbol' in tick:
+            fyers_symbol = tick['symbol']
+            
+            if fyers_symbol in FYERS_SYMBOLS:
+                ticker_symbol = FYERS_SYMBOLS[fyers_symbol]
+                
+                # Update absolute latest tick data in global state
+                st.session_state[f"live_tick_{ticker_symbol}"] = tick
+                
+                # Append to rolling history list for charting
+                if f"live_history_{ticker_symbol}" not in st.session_state:
+                    st.session_state[f"live_history_{ticker_symbol}"] = []
+                    
+                st.session_state[f"live_history_{ticker_symbol}"].append({
+                    'Time': datetime.now(),
+                    'Close': tick.get('ltp', 0),
+                    'High': tick.get('high_price', tick.get('ltp', 0)),
+                    'Low': tick.get('low_price', tick.get('ltp', 0)),
+                    'Volume': tick.get('vol_traded_today', 0)
+                })
+                
+                # Limit memory footprint
+                st.session_state[f"live_history_{ticker_symbol}"] = st.session_state[f"live_history_{ticker_symbol}"][-500:]
+
+def onerror(message):
+    logger.error(f"Fyers WebSocket Error: {message}")
+
+def onclose(message):
+    logger.info("Fyers WebSocket Connection Closed")
+
+def onopen():
+    """Callback on successful connect to subscribe to symbols."""
+    symbols = list(FYERS_SYMBOLS.keys())
+    if 'fyers_ws' in st.session_state:
+        st.session_state.fyers_ws.subscribe(symbol=symbols, data_type="SymbolUpdate")
+
+def start_fyers_websocket(client_id: str, access_token: str):
+    """Initializes and runs the Fyers WebSocket in a daemon thread."""
+    ws_token = f"{client_id}:{access_token}"
+    
+    fyers_ws = data_ws.FyersDataSocket(
+        access_token=ws_token,
+        log_path="",
+        litemode=False,
+        write_to_file=False,
+        reconnect=True,
+        on_connect=onopen,
+        on_close=onclose,
+        on_error=onerror,
+        on_message=onmessage
+    )
+    
+    st.session_state.fyers_ws = fyers_ws
+    fyers_ws.connect()
+
 # ============================== HELPERS & DEFENSIVE RENDER ==============================
 def markdown_to_html(text: str) -> str:
     return re.sub(r'\*\*(.*?)\*\*', r'<strong style="color:#67e8f9;font-weight:700;">\1</strong>', text)
@@ -157,7 +233,6 @@ def section_header(number: str, title: str, icon: str = "◈") -> None:
     """, unsafe_allow_html=True)
 
 def safe_render(func: Callable, *args, **kwargs) -> None:
-    """Wrapper to encapsulate UI components and prevent app-wide crashes."""
     try:
         return func(*args, **kwargs)
     except Exception as e:
@@ -171,7 +246,7 @@ def get_pivots(high, low, close):
     s1 = (2 * pivot) - high
     return pivot, r1, s1
 
-# ============================== DATA INGESTION ==============================
+# ============================== HISTORICAL DATA INGESTION ==============================
 @st.cache_data(ttl=300, show_spinner=False)
 def _fetch_data_internal(ticker: str, period: str, interval: str, is_crypto: bool) -> Optional[pd.DataFrame]:
     if interval == '15m': period = '1mo'
@@ -183,14 +258,12 @@ def _fetch_data_internal(ticker: str, period: str, interval: str, is_crypto: boo
 
     if data is None or data.empty: return None
 
-    # CRITICAL: Normalize MultiIndex columns (yfinance API update issue fix)
     if isinstance(data.columns, pd.MultiIndex):
         data.columns = data.columns.get_level_values(0)
 
     if data.index.tz is not None:
         data.index = data.index.tz_localize(None)
 
-    # CRITICAL: Prevent processing of empty/corrupted dataframes
     if 'Close' not in data.columns:
         return None
 
@@ -366,10 +439,6 @@ def render_executive_summary(
 
 # ============================== DEEP LEARNING ENGINE (LSTM) ==============================
 def frac_diff_series(series: pd.Series, d: float = 0.4, window: int = 20) -> pd.Series:
-    """
-    Applies fractional differentiation to a Pandas Series to achieve stationarity 
-    while retaining memory. Formula approximates binomial expansion weights.
-    """
     weights = [1.0]
     for k in range(1, window):
         weights.append(-weights[-1] * (d - k + 1) / k)
@@ -390,24 +459,21 @@ class QuantLSTM(nn.Module):
 
     def forward(self, x):
         out, _ = self.lstm(x)
-        out = self.fc(out[:, -1, :])  # Extract last sequence state
+        out = self.fc(out[:, -1, :]) 
         return self.sigmoid(out)
 
 @st.cache_resource(ttl=3600, show_spinner=False)
 def train_dl_model(ticker: str, is_crypto: bool):
-    # Fetch 5 years of data for deep learning model stability
     df = fetch_data(ticker, period="5y", interval="1d", is_crypto=is_crypto)
 
     if df is None or len(df) < 200 or 'Close' not in df.columns: 
         return None, None, None, None
 
-    # Feature Engineering (Fractional Diff replaces raw price)
     df['Frac_Diff'] = frac_diff_series(df['Close'], d=0.4, window=20)
     df['Log_Returns'] = np.log(df['Close'] / df['Close'].shift(1))
     df['Vol_20D'] = df['Log_Returns'].rolling(20).std() * np.sqrt(252)
     df['SMA_20_Dist'] = (df['Close'] / df['Close'].rolling(20).mean()) - 1
     
-    # Target: Will price be higher in exactly 5 days?
     df['Target'] = np.where(df['Close'].shift(-5) > df['Close'], 1, 0)
 
     features = ['Frac_Diff', 'Log_Returns', 'Vol_20D', 'SMA_20_Dist']
@@ -422,7 +488,6 @@ def train_dl_model(ticker: str, is_crypto: bool):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    # Sequence Creation (Remembering past 60 candles)
     seq_length = 60
     xs, ys = [], []
     for i in range(len(X_scaled) - seq_length):
@@ -435,19 +500,16 @@ def train_dl_model(ticker: str, is_crypto: bool):
     if len(X_seq) < 50:
         return None, None, None, None
 
-    # Train/Test Split (80/20)
     split = int(len(X_seq) * 0.8)
     X_train_t = torch.FloatTensor(X_seq[:split])
     y_train_t = torch.FloatTensor(y_seq[:split]).unsqueeze(1)
     X_test_t = torch.FloatTensor(X_seq[split:])
     y_test_t = torch.FloatTensor(y_seq[split:]).unsqueeze(1)
 
-    # Init Model & Optimizer
     model = QuantLSTM(input_size=len(features))
     criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.005)
 
-    # Fast Training Loop for Streamlit
     epochs = 40
     for epoch in range(epochs):
         model.train()
@@ -457,7 +519,6 @@ def train_dl_model(ticker: str, is_crypto: bool):
         loss.backward()
         optimizer.step()
 
-    # Validation
     model.eval()
     with torch.no_grad():
         preds = model(X_test_t)
@@ -478,7 +539,6 @@ def render_dl_engine(ticker: str, is_crypto: bool) -> None:
         st.warning("Insufficient historical data to train LSTM neural network.")
         return
 
-    # Fetch live inference data
     df = fetch_data(ticker, period="6mo", interval="1d", is_crypto=is_crypto)
 
     if df is None or df.empty or 'Close' not in df.columns:
@@ -490,7 +550,6 @@ def render_dl_engine(ticker: str, is_crypto: bool) -> None:
     df['Vol_20D'] = df['Log_Returns'].rolling(20).std() * np.sqrt(252)
     df['SMA_20_Dist'] = (df['Close'] / df['Close'].rolling(20).mean()) - 1
 
-    # Ensure consistent features
     for f in features:
         if f not in df.columns:
             df[f] = 0.0 
@@ -501,7 +560,6 @@ def render_dl_engine(ticker: str, is_crypto: bool) -> None:
         st.warning("Prediction calculation failed. Not enough live feature data to build a 60-day sequence.")
         return
 
-    # Process and Predict
     live_scaled = scaler_full.transform(live_data.values)
     live_seq = torch.FloatTensor(live_scaled[-60:]).unsqueeze(0)
 
@@ -544,7 +602,6 @@ def render_dl_engine(ticker: str, is_crypto: bool) -> None:
         st.plotly_chart(fig_gauge, use_container_width=True)
 
     with col2:
-        # Plot Fractional Differentiation stationary series vs raw price
         fig_fd = make_subplots(specs=[[{"secondary_y": True}]])
         plot_df = df.tail(100).dropna()
         
@@ -577,7 +634,6 @@ def render_portfolio_risk(is_crypto: bool, currency: str) -> None:
     for ticker, name in zip(basket, basket_names):
         df = fetch_data(ticker, period="2y", interval="1d", is_crypto=is_crypto)
         if df is not None and not df.empty and 'Close' in df.columns:
-            # Safely drop any duplicate timestamps to prevent dataframe merging errors
             df = df[~df.index.duplicated(keep='first')]
             data_dict[ticker] = df['Close']
             successful_names.append(name.split(" ")[0])
@@ -586,30 +642,23 @@ def render_portfolio_risk(is_crypto: bool, currency: str) -> None:
         st.warning("Insufficient portfolio data to calculate correlation and risk.")
         return
 
-    # Forward fill to handle minor timezone or holiday mismatches, then drop NAs
     port_df = pd.DataFrame(data_dict).ffill().dropna()
     
-    # CRITICAL FIX: Ensure we have enough overlapping rows to compute covariance and VaR
     if len(port_df) < 30:
         st.warning(f"Insufficient overlapping historical data ({len(port_df)} days). Need at least 30 days to compute Portfolio Risk.")
         return
 
-    # Calculate log returns
     returns = np.log(port_df / port_df.shift(1)).dropna()
-    
-    # CRITICAL FIX: Replace exactly 0 std dev with a tiny float to prevent division by zero (inf weights)
     std_devs = returns.std().replace(0, 1e-6)
     
     inv_vol = 1.0 / std_devs
     weights = (inv_vol / inv_vol.sum()).values
     cov_matrix = returns.cov()
     
-    # Safely compute portfolio variance
     port_var = np.dot(weights.T, np.dot(cov_matrix, weights))
     port_std_dev = np.sqrt(abs(port_var)) * np.sqrt(252)
     hist_port_returns = returns.dot(weights)
     
-    # CRITICAL FIX: Use pandas quantile instead of numpy percentile for safety with Series
     var_95 = abs(hist_port_returns.quantile(0.05)) * 100
     
     weight_str = " / ".join([f"{n}: {w*100:.0f}%" for n, w in zip(successful_names, weights)])
@@ -619,146 +668,90 @@ def render_portfolio_risk(is_crypto: bool, currency: str) -> None:
     c2.metric("Portfolio Annual Vol", f"{port_std_dev*100:.2f}%")
     c3.metric("Daily VaR (95%)", f"-{var_95:.2f}%", "Capital at Risk", delta_color="inverse")
 
-# ============================== REALTIME CHART ==============================
-def render_realtime_chart(selected_name: str, ticker: str, is_crypto: bool) -> None:
-    section_header("", "MARKET PRICE · VOLUME · MOMENTUM", "◈")
-    timeframe = st.radio("Timeframe", ["15m", "1h", "4h", "1d"], index=1, horizontal=True, label_visibility="collapsed")
-    period, interval = (
-        ("1mo", "15m") if timeframe == "15m"
-        else ("730d", "1h") if timeframe in ["1h", "4h"]
-        else ("2y", "1d")
-    )
-
-    data = fetch_data(ticker, period=period, interval=interval, is_crypto=is_crypto)
+# ============================== REALTIME CHART (FRAGMENT) ==============================
+@st.fragment(run_every="1s")
+def render_realtime_chart(ticker: str, is_crypto: bool) -> None:
+    section_header("", "LIVE MARKET MATRIX · 1S TICK", "◈")
     
-    if data is None or data.empty or 'Close' not in data.columns:
-        st.caption(f"Real-time data currently unavailable for {ticker}.")
+    # Fallback for Crypto or if Fyers is not configured/installed
+    if is_crypto or not HAS_FYERS:
+        data = fetch_data(ticker, period="5d", interval="15m", is_crypto=is_crypto)
+        if data is None or data.empty or 'Close' not in data.columns:
+            st.caption(f"Real-time data currently unavailable for {ticker}.")
+            return
+        
+        last_close = safe_get_scalar(data['Close'])
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Live Price (15m delay)", f"${last_close:,.2f}")
+        c2.metric("Volume", f"{safe_get_scalar(data['Volume']):,.0f}")
+        c3.metric("Status", "Polling Mode")
+        
+        fig = go.Figure(data=[go.Candlestick(x=data.index, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'])])
+        fig.update_layout(template=CHART_THEME['template'], height=400, margin=dict(l=10, r=50, t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig, use_container_width=True)
         return
 
-    if timeframe == "4h":
-        if 'Volume' in data.columns:
-            data = data.resample('4h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
-        else:
-            data = data.resample('4h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
-
-    if data.empty:
-        st.warning(f"Insufficient data after resampling for {ticker}.")
+    # Fyers Websocket Data Rendering
+    tick_data = st.session_state.get(f"live_tick_{ticker}", None)
+    history_data = st.session_state.get(f"live_history_{ticker}", [])
+    
+    if tick_data is None or len(history_data) == 0:
+        st.info(f"Awaiting Fyers WebSocket feed for {ticker}. Please ensure you are logged in via the sidebar.")
         return
-
-    data = data.tail(300 if timeframe in ["15m", "1h", "4h"] else 252).copy()
-
-    if 'Volume' in data.columns and data['Volume'].sum() > 0:
-        data['Typical_Price'] = (data['High'] + data['Low'] + data['Close']) / 3
-        data['VP'] = data['Typical_Price'] * data['Volume']
-        grouper = data.index.date if timeframe in ['15m', '1h', '4h'] else data.index.to_period('M')
-        data['VWAP'] = data.groupby(grouper)['VP'].cumsum() / data.groupby(grouper)['Volume'].cumsum()
+        
+    ltp = tick_data.get('ltp', 0.0)
+    prev_close = tick_data.get('prev_close_price', ltp)
+    
+    if prev_close > 0:
+        change_pct = ((ltp - prev_close) / prev_close) * 100
     else:
-        data['VWAP'] = np.nan
-
-    data['EMA_89'] = data['Close'].ewm(span=89, adjust=False).mean()
-    data['EMA_21'] = data['Close'].ewm(span=21, adjust=False).mean()
-
-    data['Prev_High'] = data['High'].rolling(20).max().shift(1)
-    data['Prev_Low'] = data['Low'].rolling(20).min().shift(1)
-    data['Supply_Sweep'] = (data['High'] > data['Prev_High']) & (data['Close'] < data['Prev_High'])
-    data['Demand_Sweep'] = (data['Low'] < data['Prev_Low']) & (data['Close'] > data['Prev_Low'])
-
-    last_close = safe_get_scalar(data['Close'])
-    x_format = '%Y-%m-%d' if timeframe == "1d" else '%Y-%m-%d %H:%M'
-    x_axis_string = data.index.strftime(x_format)
-
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        row_heights=[0.80, 0.20], vertical_spacing=0.03
-    )
-
-    fig.add_trace(go.Candlestick(
-        x=x_axis_string, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'],
-        name='Price', increasing_line_color=CHART_THEME['bullish'], decreasing_line_color=CHART_THEME['bearish'],
-        increasing_fillcolor=CHART_THEME['bullish'], decreasing_fillcolor=CHART_THEME['bearish']
-    ), row=1, col=1)
-
-    if not data['EMA_89'].isna().all():
-        fig.add_trace(go.Scatter(
-            x=x_axis_string, y=data['EMA_89'], mode='lines', name='EMA 89',
-            line=dict(color='#fbbf24', width=1.5)
-        ), row=1, col=1)
-
-    if not data['EMA_21'].isna().all():
-        fig.add_trace(go.Scatter(
-            x=x_axis_string, y=data['EMA_21'], mode='lines', name='EMA 21',
-            line=dict(color='#a78bfa', width=2)
-        ), row=1, col=1)
-
-    if not data['VWAP'].isna().all():
-        fig.add_trace(go.Scatter(
-            x=x_axis_string, y=data['VWAP'], mode='lines', name='VWAP',
-            line=dict(color='#e2e8f0', width=1.5, dash='dot')
-        ), row=1, col=1)
-
-    supply_data = data[data['Supply_Sweep']]
-    demand_data = data[data['Demand_Sweep']]
-
-    if not supply_data.empty:
-        fig.add_trace(go.Scatter(
-            x=supply_data.index.strftime(x_format), y=supply_data['High'] * 1.002, mode='markers',
-            marker=dict(symbol='triangle-down', size=11, color=CHART_THEME["bearish"], line=dict(width=1, color='white')),
-            name='Supply Sweep'
-        ), row=1, col=1)
-
-    if not demand_data.empty:
-        fig.add_trace(go.Scatter(
-            x=demand_data.index.strftime(x_format), y=demand_data['Low'] * 0.998, mode='markers',
-            marker=dict(symbol='triangle-up', size=11, color=CHART_THEME["bullish"], line=dict(width=1, color='white')),
-            name='Demand Sweep'
-        ), row=1, col=1)
-
-    fig.add_hline(
-        y=last_close, line_dash="dot", line_color=CHART_THEME["primary"], line_width=1.5,
-        annotation_text=f"  {last_close:,.2f}", annotation_position="right",
-        annotation_font_color=CHART_THEME["primary"], row=1, col=1
-    )
-
-    if 'Volume' in data.columns and not (data['Volume'] == 0).all():
-        colors = [CHART_THEME['bullish'] if row['Close'] >= row['Open'] else CHART_THEME['bearish'] for _, row in data.iterrows()]
-        fig.add_trace(go.Bar(
-            x=x_axis_string, y=data['Volume'], name='Volume',
-            marker_color=colors, opacity=0.75, marker_line_width=0
-        ), row=2, col=1)
-
-    grid_cfg = dict(showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.04)')
-    fig.update_layout(
-        template=CHART_THEME['template'], height=560, xaxis_rangeslider_visible=False,
-        hovermode='x unified', bargap=0, bargroupgap=0,
-        margin=dict(l=10, r=65, t=10, b=10),
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        showlegend=True, legend=dict(
-            orientation='h', yanchor='bottom', y=1.01, xanchor='left', x=0,
-            font=dict(size=10, color='#64748b'), bgcolor='rgba(0,0,0,0)', borderwidth=0
+        change_pct = 0.0
+        
+    vol = tick_data.get('vol_traded_today', 0)
+    day_high = tick_data.get('high_price', ltp)
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Live Price", f"₹{ltp:,.2f}", f"{change_pct:+.2f}%")
+    c2.metric("Day High", f"₹{day_high:,.2f}")
+    c3.metric("Total Volume", f"{vol:,}")
+    
+    df_live = pd.DataFrame(history_data)
+    
+    fig = make_subplots(rows=1, cols=1)
+    fig.add_trace(
+        go.Scatter(
+            x=df_live['Time'], 
+            y=df_live['Close'],
+            mode='lines',
+            name='LTP',
+            line=dict(color=CHART_THEME['primary'], width=2),
+            fill='tozeroy',
+            fillcolor='rgba(103, 232, 249, 0.08)'
         )
     )
-
-    fig.update_xaxes(type='category', **grid_cfg, showticklabels=False, row=1, col=1)
-    fig.update_xaxes(
-        type='category', categoryorder='category ascending', **grid_cfg,
-        showticklabels=True, showspikes=True, spikemode='across',
-        spikethickness=1, spikedash='dot', spikecolor='rgba(255,255,255,0.2)', row=2, col=1
+    
+    fig.add_hline(
+        y=ltp, 
+        line_dash="dot", 
+        line_color=CHART_THEME['accent'], 
+        annotation_text=f"₹{ltp:,.2f}",
+        annotation_position="right"
     )
-    fig.update_yaxes(**grid_cfg)
-
-    add_watermark(fig)
+    
+    fig.update_layout(
+        template=CHART_THEME['template'],
+        height=400,
+        margin=dict(l=10, r=50, t=10, b=10),
+        paper_bgcolor='rgba(0,0,0,0)', 
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.04)'),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.04)')
+    )
+    
     st.plotly_chart(fig, use_container_width=True)
 
-    last_24h = data.loc[data.index >= data.index.max() - pd.Timedelta(days=1)]
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Latest Close", f"{last_close:,.2f}")
-    c2.metric("24h High", f"{last_24h['High'].max():,.2f}")
-    c3.metric("24h Low", f"{last_24h['Low'].min():,.2f}")
-    last_supply = safe_get_scalar(data['Supply_Sweep'])
-    last_demand = safe_get_scalar(data['Demand_Sweep'])
-    regime = "SUPPLY SWEEP" if last_supply else ("DEMAND SWEEP" if last_demand else "DISCOVERY")
-    c4.metric("Micro-Regime", regime)
 
+# ============================== OTHER METRIC COMPONENTS ==============================
 def render_volatility_metrics(asset_class: str, ticker: str, is_crypto: bool) -> None:
     section_header("1", "IMPLIED VOLATILITY RANK", "◈")
     vix_name = "India VIX" if asset_class == "Indian Equities" else "Synthetic IV (30D HV)"
@@ -1073,9 +1066,6 @@ def main() -> None:
         initial_sidebar_state="expanded"
     )
 
-    if HAS_AUTOREFRESH:
-        st_autorefresh(interval=60000, key="aladdin_refresh")
-
     # COMPREHENSIVE CSS
     st.markdown("""
         <style>
@@ -1331,15 +1321,6 @@ def main() -> None:
         }
         div[role="radiogroup"] label[data-baseweb="radio"] { background: transparent !important; }
 
-        div[data-testid="stNumberInput"] input {
-            background: #06101d !important;
-            border: 1px solid #1a2840 !important;
-            border-radius: 4px !important;
-            color: #67e8f9 !important;
-            font-family: 'JetBrains Mono', monospace !important;
-            font-size: 13px !important;
-        }
-
         div[data-testid="stAlert"] {
             background: rgba(103,232,249,0.04) !important;
             border: 1px solid rgba(103,232,249,0.12) !important;
@@ -1409,8 +1390,6 @@ def main() -> None:
             div[data-testid="stMetricValue"] { font-size: 16px !important; }
             div[data-testid="stMetricLabel"] { font-size: 9px !important; }
             div[data-testid="stMetricDelta"] { font-size: 10px !important; }
-            div[data-testid="stNumberInput"] label { font-size: 9px !important; }
-            div[data-testid="stNumberInput"] input { font-size: 12px !important; height: 32px !important; min-height: 32px !important; }
             .stTabs [data-baseweb="tab-list"] { gap: 10px !important; overflow-x: auto !important; padding-bottom: 4px !important; }
             .stTabs [data-baseweb="tab"] { height: 38px !important; font-size: 10px !important; padding: 6px 10px !important; white-space: nowrap !important; }
         }
@@ -1428,15 +1407,84 @@ def main() -> None:
                 st.cache_data.clear()
                 st.rerun()
         with sync_col2:
-            status_label = "●" if HAS_AUTOREFRESH else "○"
+            # Check if Fyers is connected
+            is_connected = 'fyers_access_token' in st.session_state
+            status_label = "●" if is_connected else "○"
             st.markdown(
-                f'<div style="color:{"#22c55e" if HAS_AUTOREFRESH else "#ef4444"};font-size:20px;text-align:center;padding-top:5px;">{status_label}</div>',
+                f'<div style="color:{"#22c55e" if is_connected else "#ef4444"};font-size:20px;text-align:center;padding-top:5px;">{status_label}</div>',
                 unsafe_allow_html=True
             )
 
         st.divider()
         asset_class = st.radio("Asset Class", ["Indian Equities", "Crypto"])
         is_crypto = (asset_class == "Crypto")
+
+        # ==========================================
+        # FULLY AUTOMATED FYERS LOGIN PORTAL
+        # ==========================================
+        if not is_crypto and HAS_FYERS:
+            
+            fyers_client_id = "A8MXI4LH6N-200"
+            fyers_secret = "SwNNcmILk5Zo4UE8"
+            
+            # MUST match exactly what you set in Fyers API Dashboard
+            fyers_redirect = "http://127.0.0.1:8501/" 
+            
+            # 1. AUTO-CATCH THE AUTH CODE FROM URL
+            if "auth_code" in st.query_params and "fyers_access_token" not in st.session_state:
+                auth_code = st.query_params["auth_code"]
+                
+                with st.spinner("Automating Fyers Login..."):
+                    session = fyersModel.SessionModel(
+                        client_id=fyers_client_id,
+                        secret_key=fyers_secret,
+                        redirect_uri=fyers_redirect, 
+                        response_type="code",
+                        grant_type="authorization_code"
+                    )
+                    session.set_token(auth_code)
+                    try:
+                        response = session.generate_token()
+                        if "access_token" in response:
+                            st.session_state.fyers_access_token = response["access_token"]
+                            
+                            # Wipe the URL clean so it doesn't try to re-authenticate if you hit refresh
+                            st.query_params.clear()
+                            
+                            # Start WebSocket in background thread
+                            if 'fyers_thread_started' not in st.session_state:
+                                st.session_state.fyers_thread_started = True
+                                ws_thread = threading.Thread(
+                                    target=start_fyers_websocket, 
+                                    args=(fyers_client_id, st.session_state.fyers_access_token), 
+                                    daemon=True
+                                )
+                                ws_thread.start()
+                            st.rerun() # Refresh to update UI
+                        else:
+                            st.error(f"Failed to connect: {response.get('message', 'Unknown error')}")
+                    except Exception as e:
+                        st.error(f"Error generating token: {e}")
+
+            # 2. SHOW LOGIN BUTTON IF NOT CONNECTED
+            if "fyers_access_token" not in st.session_state:
+                st.markdown("### 🔑 Data Feed Offline")
+                session = fyersModel.SessionModel(
+                    client_id=fyers_client_id,
+                    secret_key=fyers_secret,
+                    redirect_uri=fyers_redirect, 
+                    response_type="code",
+                    grant_type="authorization_code"
+                )
+                auth_url = session.generate_authcode()
+                
+                st.info("Click below to log in. The terminal will automatically connect and resume when you finish.")
+                st.link_button("1. CLICK HERE TO LOGIN", auth_url, use_container_width=True)
+            else:
+                st.success("✅ Fyers Live Feed Active")
+            
+            st.divider()
+        # ==========================================
 
         if not is_crypto:
             ASSET_DICT = INDIAN_ASSETS
@@ -1457,8 +1505,9 @@ def main() -> None:
     # PAGE HEADER
     h_col1, h_col2 = st.columns([5, 1])
     with h_col1:
-        live_tag = "⬤ LIVE" if HAS_AUTOREFRESH else "⬤ ONLINE"
-        live_color = "#22c55e" if HAS_AUTOREFRESH else "#fbbf24"
+        is_connected = 'fyers_access_token' in st.session_state
+        live_tag = "⬤ LIVE WS" if is_connected and not is_crypto else "⬤ ONLINE"
+        live_color = "#22c55e" if is_connected and not is_crypto else "#fbbf24"
         st.markdown(f"""
             <div class="top-header-container" style="display:flex;align-items:baseline;gap:14px;margin-bottom:14px;flex-wrap:wrap;">
                 <div class="top-header-title" style="font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;
@@ -1485,7 +1534,7 @@ def main() -> None:
             safe_render(render_executive_summary, selected_name, ticker, asset_class, div1, div2, div1_name, div2_name, currency, trading_days, is_crypto)
 
             with st.container(border=True):
-                safe_render(render_realtime_chart, selected_name, ticker, is_crypto)
+                safe_render(render_realtime_chart, ticker, is_crypto)
 
             col_row2_1, col_row2_2, col_row2_3 = st.columns(3)
             with col_row2_1:
@@ -1522,14 +1571,12 @@ def main() -> None:
 
     with tab_pre:
         with st.container(border=True):
-            # Pre-Trade Analysis Step-by-Step
             st.markdown("## 🌅 PRE-TRADE ANALYSIS (8-Step Institutional Setup)")
             
             asset_data = fetch_data(ticker, period="1y", interval="1d", is_crypto=is_crypto)
             vix_data = get_vix_data(asset_class, ticker, period="1y", is_crypto=is_crypto)
             
             if asset_data is not None and len(asset_data) > 200 and 'Close' in asset_data.columns:
-                # Steps 1 & 2: Environment & Technical
                 section_header("1 & 2", "ENVIRONMENT & TECHNICAL STRUCTURE", "◈")
                 
                 df_tech = asset_data.copy()
@@ -1560,7 +1607,6 @@ def main() -> None:
                 pivot, r1, s1 = get_pivots(prev['High'], prev['Low'], prev['Close'])
                 c2.markdown(f"<div class='module-card'><div class='metric-label'>Key Levels (Pivot/R1/S1)</div><div class='metric-value'>{currency}{pivot:,.2f}</div><div style='font-size:11px;color:#94a3b8;margin-top:4px;'>R1: {currency}{r1:,.2f} | S1: {currency}{s1:,.2f}</div></div>", unsafe_allow_html=True)
 
-                # Step 3: Volatility Analysis
                 section_header("3", "VOLATILITY ANALYSIS (OPTIONS PRICING)", "◈")
                 
                 current_iv = 15.0
@@ -1582,7 +1628,6 @@ def main() -> None:
                 v1.markdown(f"<div class='module-card'><div class='metric-label'>Implied Volatility (IV) Rank</div><div class='metric-value'>{ivr:.1f}%</div><div style='font-size:11px;color:#94a3b8;margin-top:4px;'>Current IV: {current_iv:.2f}</div></div>", unsafe_allow_html=True)
                 v2.markdown(f"<div class='module-card'><div class='metric-label'>Pricing Status</div><div class='metric-value'>{iv_bias}</div><div style='font-size:11px;color:#94a3b8;margin-top:4px;'>{iv_action}</div></div>", unsafe_allow_html=True)
 
-                # Step 7: Strategy Selection & DEEP LEARNING INTEGRATION
                 section_header("7", "AI STRATEGY COMBINER + DEEP LEARNING", "◈")
                 
                 strat = ""
@@ -1593,7 +1638,6 @@ def main() -> None:
                     if ivr > 50: strat = "Range + High IV → **Iron Condor / Short Strangle**"
                     else: strat = "Explosive Expected → **Long Straddle / Strangle**"
                     
-                # Integrate the LSTM forward pass into the Pre-Trade setup directly
                 model_full, scaler_full, features, _ = train_dl_model(ticker, is_crypto)
                 dl_text = ""
                 
@@ -1630,10 +1674,8 @@ def main() -> None:
                 st.markdown(f"<div style='background:rgba(103,232,249,0.05); padding:15px; border-left:3px solid {CHART_THEME['primary']}; border-radius:4px;'><strong>Strategy Fit:</strong> {strat}{dl_text}</div>", unsafe_allow_html=True)
                 st.divider()
 
-                # Step 4 & 8: Automated Quantitative & Risk Decision
                 section_header("4-5-6-8", "AUTO-RISK & EVENT CHECKLIST", "◈")
                 
-                # Calculate ATR (Average True Range) for automated stop-loss
                 df_tech['High-Low'] = df_tech['High'] - df_tech['Low']
                 df_tech['High-PrevClose'] = abs(df_tech['High'] - df_tech['Close'].shift(1))
                 df_tech['Low-PrevClose'] = abs(df_tech['Low'] - df_tech['Close'].shift(1))
@@ -1641,13 +1683,12 @@ def main() -> None:
                 df_tech['ATR_14'] = df_tech['TR'].rolling(14).mean()
                 atr = safe_get_scalar(df_tech['ATR_14'])
                 
-                # Default mock capital for sizing (1 Lakh INR or 10k USD)
                 mock_capital = 100000 if currency == "₹" else 10000
-                risk_pct = 0.02 # 2% Max Risk
+                risk_pct = 0.02
                 max_loss = mock_capital * risk_pct
                 
                 stop_dist = 1.5 * atr
-                target_dist = stop_dist * 2 # 1:2 RR
+                target_dist = stop_dist * 2
                 
                 pos_size = max_loss / stop_dist if stop_dist > 0 else 0
                 
@@ -1697,7 +1738,6 @@ def main() -> None:
                 today = asset_data.iloc[-1]
                 yest = asset_data.iloc[-2]
                 
-                # Step 1: Price Behavior
                 section_header("1-5", "PRICE BEHAVIOR & REGIME SHIFT", "◈")
                 c1, c2, c3 = st.columns(3)
                 c1.metric("EOD Close", f"{currency}{today['Close']:,.2f}", f"{((today['Close']-yest['Close'])/yest['Close'])*100:+.2f}%")
@@ -1719,24 +1759,21 @@ def main() -> None:
                 
                 st.divider()
                 
-                # Step 2 & 3: Greeks & Vol
                 section_header("2-3", "SYNTHETIC GREEKS & VOLATILITY SHIFT", "◈")
                 st.markdown("""
                 <p style='color:#94a3b8; font-size:12px;'>Automated EOD assessment of option pricing drivers.</p>
                 """, unsafe_allow_html=True)
                 
-                # Fetch VIX data for Greeks synthesis
                 vix_t = get_vix_data(asset_class, ticker, period="1mo", is_crypto=is_crypto)
                 if vix_t is not None and len(vix_t) > 1:
                     vix_today = safe_get_scalar(vix_t['Close'].iloc[-1])
                     vix_yest = safe_get_scalar(vix_t['Close'].iloc[-2])
                 else:
-                    vix_today, vix_yest = 15.0, 15.0 # Fallback
+                    vix_today, vix_yest = 15.0, 15.0
                 
                 spot_pct = ((today['Close'] - yest['Close']) / yest['Close']) * 100
                 vix_diff = vix_today - vix_yest
                 
-                # Synthetic Evaluations
                 delta_eval = f"Active ({spot_pct:+.2f}%)"
                 delta_col = CHART_THEME['bullish'] if abs(spot_pct) > 0.5 else CHART_THEME['neutral']
                 
@@ -1744,7 +1781,7 @@ def main() -> None:
                 gamma_col = CHART_THEME['bearish'] if abs(spot_pct) > 1.5 else CHART_THEME['bullish']
                 
                 vega_eval = f"Crush ({vix_diff:+.1f} pts)" if vix_diff < -0.5 else (f"Spike ({vix_diff:+.1f} pts)" if vix_diff > 0.5 else "Flat")
-                vega_col = CHART_THEME['bullish'] if vix_diff < 0 else CHART_THEME['bearish'] # Default perspective of option seller/hedger
+                vega_col = CHART_THEME['bullish'] if vix_diff < 0 else CHART_THEME['bearish']
                 
                 theta_eval = "-1 Day Extrinsic Paid"
                 
@@ -1756,7 +1793,6 @@ def main() -> None:
                 
                 st.divider()
 
-                # Step 6, 7, 8, 9: Review
                 section_header("6-9", "DEFENSE & EXIT QUALITY", "◈")
                 r1, r2 = st.columns(2)
                 with r1:
@@ -1769,7 +1805,6 @@ def main() -> None:
                 
                 st.divider()
                 
-                # Step 10: Journal
                 section_header("10", "TRADE JOURNAL ENTRY (NON-NEGOTIABLE)", "◈")
                 if 'trade_journal' not in st.session_state:
                     st.session_state.trade_journal = pd.DataFrame(columns=[
@@ -1800,7 +1835,6 @@ def main() -> None:
                 current_vix = safe_get_scalar(vix_data['Close'])
                 prev_vix = safe_get_scalar(vix_data['Close'].iloc[-2]) if len(vix_data) > 1 else current_vix
                 
-                # STEP 1: READ VIX
                 section_header("1", f"READ {vix_ticker_name.upper()} (MARKET CONDITION)", "◈")
                 
                 if current_vix < 14:
@@ -1830,7 +1864,6 @@ def main() -> None:
                 st.plotly_chart(fig, use_container_width=True)
                 st.divider()
 
-                # STEP 2: OPTION CHAIN PCR & SMART MONEY
                 section_header("2", "OPTION CHAIN (SMART MONEY POSITIONING)", "◈")
                 colA, colB = st.columns(2)
                 with colA:
@@ -1852,7 +1885,6 @@ def main() -> None:
                     st.markdown(f"<div style='color:{sig_col}; font-weight:bold;'>{sig}</div>", unsafe_allow_html=True)
                 st.divider()
 
-                # STEP 3: COMPLETE STRATEGY SETUPS
                 section_header("3", "COMPLETE STRATEGY SETUPS", "◈")
                 st.markdown("<p style='color:#94a3b8; font-size:12px;'>AI evaluating conditions for the 4 Master Setups...</p>", unsafe_allow_html=True)
 
@@ -1898,4 +1930,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
